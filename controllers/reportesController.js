@@ -25,7 +25,7 @@ const getDashboard = async (req, res) => {
         fechaInicio = new Date(ahora.setHours(0, 0, 0, 0));
     }
 
-    // Resumen de ventas
+    // Resumen de ventas GENERAL (en USD)
     const ventasResult = await query(
       `SELECT 
          COUNT(*) as total_ventas,
@@ -37,7 +37,24 @@ const getDashboard = async (req, res) => {
       [fechaInicio]
     );
 
-    // Productos más vendidos
+    // Ventas POR MONEDA
+    const ventasPorMonedaResult = await query(
+      `SELECT 
+         tm.codigo_moneda,
+         tm.nombre_moneda,
+         tm.simbolo,
+         COUNT(*) as total_ventas,
+         COALESCE(SUM(v.total), 0) as total_moneda,
+         COALESCE(SUM(v.total / tm.tasa_cambio_usd), 0) as total_usd
+       FROM ventas v
+       JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
+       WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'
+       GROUP BY tm.codigo_moneda, tm.nombre_moneda, tm.simbolo
+       ORDER BY tm.codigo_moneda`,
+      [fechaInicio]
+    );
+
+    // Productos más vendidos GENERAL
     const productosResult = await query(
       `SELECT p.nombre_producto, COUNT(dv.id_detalle_venta) as cantidad
        FROM detalle_ventas dv
@@ -48,6 +65,31 @@ const getDashboard = async (req, res) => {
        ORDER BY cantidad DESC
        LIMIT 5`,
       [fechaInicio]
+    );
+
+    // Toppings más usados
+    const toppingsResult = await query(
+      `SELECT 
+         t.nombre_topping,
+         COUNT(dvt.id_detalle_topping) as cantidad
+       FROM detalle_ventas_toppings dvt
+       JOIN toppings t ON dvt.id_topping = t.id_topping
+       JOIN detalle_ventas dv ON dvt.id_detalle_venta = dv.id_detalle_venta
+       JOIN ventas v ON dv.id_venta = v.id_venta
+       WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'
+       GROUP BY t.nombre_topping
+       ORDER BY cantidad DESC
+       LIMIT 5`,
+      [fechaInicio]
+    );
+
+    // Contar productos y toppings disponibles
+    const productosCountResult = await query(
+      'SELECT COUNT(*) as total FROM productos WHERE disponible = true'
+    );
+
+    const toppingsCountResult = await query(
+      'SELECT COUNT(*) as total FROM toppings WHERE disponible = true'
     );
 
     // Estado de caja
@@ -77,7 +119,11 @@ const getDashboard = async (req, res) => {
       success: true,
       data: {
         resumen_ventas: ventasResult.rows[0],
+        ventas_por_moneda: ventasPorMonedaResult.rows,
         productos_mas_vendidos: productosResult.rows,
+        toppings_mas_usados: toppingsResult.rows,
+        total_productos: parseInt(productosCountResult.rows[0].total),
+        total_toppings: parseInt(toppingsCountResult.rows[0].total),
         estado_caja: cajaResult.rows[0] || null,
         inventario_bajo: inventarioBajoResult.rows,
         ventas_por_estado: ventasEstadoResult.rows,

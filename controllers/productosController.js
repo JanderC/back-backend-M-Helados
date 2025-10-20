@@ -1,6 +1,17 @@
 const { query } = require('../config/database');
 
 /**
+ * Validar imagen base64
+ */
+const validateBase64Image = (base64String) => {
+  if (!base64String) return true; // Permitir null/undefined
+  
+  // Verificar formato base64 de imagen
+  const base64Regex = /^data:image\/(png|jpeg|jpg|gif|webp);base64,/;
+  return base64Regex.test(base64String);
+};
+
+/**
  * Obtener todos los productos
  * GET /api/productos
  */
@@ -104,6 +115,14 @@ const createProducto = async (req, res) => {
       });
     }
 
+    // Validar formato base64 si se proporciona imagen
+    if (imagen_url && !validateBase64Image(imagen_url)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Formato de imagen inválido. Debe ser base64 con formato data:image/[tipo];base64,...'
+      });
+    }
+
     const result = await query(
       `INSERT INTO productos (nombre_producto, descripcion, id_categoria, precio_base, costo_produccion, imagen_url)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -142,6 +161,14 @@ const updateProducto = async (req, res) => {
       disponible,
       imagen_url
     } = req.body;
+
+    // Validar formato base64 si se proporciona imagen
+    if (imagen_url && !validateBase64Image(imagen_url)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Formato de imagen inválido. Debe ser base64 con formato data:image/[tipo];base64,...'
+      });
+    }
 
     const result = await query(
       `UPDATE productos 
@@ -244,4 +271,4 @@ module.exports = {
   updateProducto,
   deleteProducto,
   getCategorias
-}
+};

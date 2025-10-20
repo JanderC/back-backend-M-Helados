@@ -27,11 +27,26 @@ const createVenta = async (req, res) => {
 
     await client.query("BEGIN");
 
-    // Calcular subtotal
-    let subtotal = 0;
+    // ✅ OBTENER TASA DE CAMBIO DE LA MONEDA SELECCIONADA
+    const monedaResult = await client.query(
+      "SELECT tasa_cambio_usd, codigo_moneda FROM tipos_moneda WHERE id_moneda = $1",
+      [id_moneda]
+    );
+
+    if (monedaResult.rows.length === 0) {
+      throw new Error("Moneda no encontrada");
+    }
+
+    const tasaCambio = parseFloat(monedaResult.rows[0].tasa_cambio_usd);
+    const codigoMoneda = monedaResult.rows[0].codigo_moneda;
+
+    console.log(`💱 Procesando venta en ${codigoMoneda} (Tasa: ${tasaCambio})`);
+
+    // Calcular subtotal EN LA MONEDA SELECCIONADA
+    let subtotalUSD = 0;
 
     for (const item of productos) {
-      // Obtener precio del producto
+      // Obtener precio del producto en USD
       const productoResult = await client.query(
         "SELECT precio_base FROM productos WHERE id_producto = $1",
         [item.id_producto]
@@ -41,10 +56,10 @@ const createVenta = async (req, res) => {
         throw new Error(`Producto ${item.id_producto} no encontrado`);
       }
 
-      const precioBase = parseFloat(productoResult.rows[0].precio_base);
-      let precioToppings = 0;
+      const precioBaseUSD = parseFloat(productoResult.rows[0].precio_base);
+      let precioToppingsUSD = 0;
 
-      // Calcular precio de toppings
+      // Calcular precio de toppings en USD
       if (item.toppings && item.toppings.length > 0) {
         for (const topping of item.toppings) {
           const toppingResult = await client.query(
@@ -53,24 +68,30 @@ const createVenta = async (req, res) => {
           );
 
           if (toppingResult.rows.length > 0) {
-            precioToppings +=
+            precioToppingsUSD +=
               parseFloat(toppingResult.rows[0].precio_adicional) *
               (topping.cantidad || 1);
           }
         }
       }
 
-      subtotal += (precioBase + precioToppings) * item.cantidad;
+      // Acumular subtotal en USD
+      subtotalUSD += (precioBaseUSD + precioToppingsUSD) * item.cantidad;
     }
 
+    // ✅ CONVERTIR A LA MONEDA SELECCIONADA
+    const subtotal = subtotalUSD * tasaCambio;
     const impuesto = 0; // Puedes agregar lógica de impuestos
     const descuento = 0; // Puedes agregar lógica de descuentos
     const total = subtotal + impuesto - descuento;
 
+    console.log(`💵 Subtotal USD: $${subtotalUSD.toFixed(2)}`);
+    console.log(`💵 Total en ${codigoMoneda}: ${total.toFixed(2)}`);
+
     // Generar número de factura único
     const numeroFactura = `F${Date.now()}`;
 
-    // Crear venta
+    // Crear venta CON MONTOS EN LA MONEDA SELECCIONADA
     const ventaResult = await client.query(
       `INSERT INTO ventas 
        (numero_factura, id_cliente, id_usuario, subtotal, impuesto, descuento, 
@@ -81,12 +102,12 @@ const createVenta = async (req, res) => {
         numeroFactura,
         id_cliente || null,
         idUsuario,
-        subtotal,
+        subtotal,        // ✅ Ya convertido a la moneda seleccionada
         impuesto,
         descuento,
-        total,
+        total,           // ✅ Ya convertido a la moneda seleccionada
         id_moneda,
-        total,
+        total,           // Monto original en la moneda seleccionada
         metodo_pago,
         notas || null,
       ]
@@ -94,17 +115,17 @@ const createVenta = async (req, res) => {
 
     const venta = ventaResult.rows[0];
 
-    // Insertar detalle de ventas
+    // Insertar detalle de ventas CON PRECIOS CONVERTIDOS
     for (const item of productos) {
       const productoResult = await client.query(
         "SELECT precio_base FROM productos WHERE id_producto = $1",
         [item.id_producto]
       );
 
-      const precioBase = parseFloat(productoResult.rows[0].precio_base);
-      let precioToppings = 0;
+      const precioBaseUSD = parseFloat(productoResult.rows[0].precio_base);
+      let precioToppingsUSD = 0;
 
-      // Calcular precio de toppings para este item
+      // Calcular precio de toppings para este item en USD
       if (item.toppings && item.toppings.length > 0) {
         for (const topping of item.toppings) {
           const toppingResult = await client.query(
@@ -112,14 +133,16 @@ const createVenta = async (req, res) => {
             [topping.id_topping]
           );
           if (toppingResult.rows.length > 0) {
-            precioToppings +=
+            precioToppingsUSD +=
               parseFloat(toppingResult.rows[0].precio_adicional) *
               (topping.cantidad || 1);
           }
         }
       }
 
-      const precioUnitario = precioBase + precioToppings;
+      // ✅ CONVERTIR PRECIOS A LA MONEDA SELECCIONADA
+      const precioUnitarioUSD = precioBaseUSD + precioToppingsUSD;
+      const precioUnitario = precioUnitarioUSD * tasaCambio;
       const subtotalItem = precioUnitario * item.cantidad;
 
       const detalleResult = await client.query(
@@ -131,14 +154,14 @@ const createVenta = async (req, res) => {
           venta.id_venta,
           item.id_producto,
           item.cantidad,
-          precioUnitario,
-          subtotalItem,
+          precioUnitario,    // ✅ Convertido
+          subtotalItem,      // ✅ Convertido
         ]
       );
 
       const detalle = detalleResult.rows[0];
 
-      // Insertar toppings del detalle
+      // Insertar toppings del detalle CON PRECIOS CONVERTIDOS
       if (item.toppings && item.toppings.length > 0) {
         for (const topping of item.toppings) {
           const toppingResult = await client.query(
@@ -147,6 +170,9 @@ const createVenta = async (req, res) => {
           );
 
           if (toppingResult.rows.length > 0) {
+            const precioAdicionalUSD = parseFloat(toppingResult.rows[0].precio_adicional);
+            const precioAdicional = precioAdicionalUSD * tasaCambio; // ✅ Convertido
+
             await client.query(
               `INSERT INTO detalle_ventas_toppings 
                (id_detalle_venta, id_topping, cantidad, precio_adicional)
@@ -155,7 +181,7 @@ const createVenta = async (req, res) => {
                 detalle.id_detalle_venta,
                 topping.id_topping,
                 topping.cantidad || 1,
-                parseFloat(toppingResult.rows[0].precio_adicional),
+                precioAdicional,  // ✅ Convertido
               ]
             );
           }
@@ -168,14 +194,22 @@ const createVenta = async (req, res) => {
     // Obtener venta completa con detalles
     const ventaCompleta = await getVentaCompleta(venta.id_venta);
 
-    // Emitir evento de socket para actualizar en tiempo real
+    // Emitir evento con nombres correctos
     if (req.app.get("io")) {
-      req.app.get("io").emit("nueva_venta", ventaCompleta);
+      const io = req.app.get("io");
+      
+      io.emit("pedido_nuevo", {
+        venta: ventaCompleta,
+        mensaje: `Nueva orden: ${ventaCompleta.numero_factura}`,
+        timestamp: new Date()
+      });
+
+      console.log('📦 Evento pedido_nuevo emitido:', ventaCompleta.numero_factura);
     }
 
     res.status(201).json({
       success: true,
-      message: "Venta creada exitosamente",
+      message: `Venta creada exitosamente en ${codigoMoneda}`,
       data: ventaCompleta,
     });
   } catch (error) {
@@ -199,7 +233,7 @@ const getVentas = async (req, res) => {
     const {
       fecha_inicio,
       fecha_fin,
-      estado_venta,
+      estado,
       id_usuario,
       limit = 50,
       offset = 0,
@@ -231,10 +265,12 @@ const getVentas = async (req, res) => {
       paramCounter++;
     }
 
-    if (estado_venta) {
-      params.push(estado_venta);
-      sqlQuery += ` AND v.estado_venta = $${paramCounter}`;
-      paramCounter++;
+    if (estado) {
+      const estados = estado.split(',').map(e => e.trim());
+      const placeholders = estados.map((_, i) => `$${paramCounter + i}`).join(',');
+      params.push(...estados);
+      sqlQuery += ` AND v.estado_venta IN (${placeholders})`;
+      paramCounter += estados.length;
     }
 
     if (id_usuario) {
@@ -254,7 +290,21 @@ const getVentas = async (req, res) => {
 
     const result = await query(sqlQuery, params);
 
-    // Obtener total de registros (con los mismos filtros)
+    const ventasConDetalles = await Promise.all(
+      result.rows.map(async (venta) => {
+        const detallesResult = await query(
+          `SELECT dv.*, p.nombre_producto, p.imagen_url
+           FROM detalle_ventas dv
+           JOIN productos p ON dv.id_producto = p.id_producto
+           WHERE dv.id_venta = $1`,
+          [venta.id_venta]
+        );
+        
+        venta.items = detallesResult.rows;
+        return venta;
+      })
+    );
+
     let countQuery = "SELECT COUNT(*) FROM ventas v WHERE 1=1";
     const countParams = [];
     let countCounter = 1;
@@ -271,10 +321,12 @@ const getVentas = async (req, res) => {
       countCounter++;
     }
 
-    if (estado_venta) {
-      countParams.push(estado_venta);
-      countQuery += ` AND v.estado_venta = $${countCounter}`;
-      countCounter++;
+    if (estado) {
+      const estados = estado.split(',').map(e => e.trim());
+      const placeholders = estados.map((_, i) => `$${countCounter + i}`).join(',');
+      countParams.push(...estados);
+      countQuery += ` AND v.estado_venta IN (${placeholders})`;
+      countCounter += estados.length;
     }
 
     if (id_usuario) {
@@ -287,7 +339,7 @@ const getVentas = async (req, res) => {
 
     res.json({
       success: true,
-      data: result.rows,
+      data: ventasConDetalles,
       total: parseInt(countResult.rows[0].count),
       limit: parseInt(limit),
       offset: parseInt(offset),
@@ -372,13 +424,17 @@ const cambiarEstadoVenta = async (req, res) => {
 
     const ventaActualizada = await getVentaCompleta(id);
 
-    // Emitir evento de socket para actualizar en tiempo real
     if (req.app.get("io")) {
-      req.app.get("io").emit("estado_venta_actualizado", {
-        id_venta: id,
+      const io = req.app.get("io");
+      
+      io.emit("estado_pedido_actualizado", {
+        id_venta: parseInt(id),
         estado_venta,
         venta: ventaActualizada,
+        timestamp: new Date()
       });
+
+      console.log('🔄 Evento estado_pedido_actualizado emitido:', id, estado_venta);
     }
 
     res.json({
@@ -400,7 +456,6 @@ const cambiarEstadoVenta = async (req, res) => {
  */
 const getVentaCompleta = async (idVenta) => {
   try {
-    // Obtener venta principal
     const ventaResult = await query(
       `SELECT v.*, 
               u.nombre_completo as nombre_usuario,
@@ -420,16 +475,18 @@ const getVentaCompleta = async (idVenta) => {
 
     const venta = ventaResult.rows[0];
 
-    // Obtener detalles de productos
     const detallesResult = await query(
-      `SELECT dv.*, p.nombre_producto, p.descripcion, p.imagen_url
+      `SELECT dv.*, 
+              p.nombre_producto, 
+              p.descripcion, 
+              p.imagen_url
        FROM detalle_ventas dv
        JOIN productos p ON dv.id_producto = p.id_producto
-       WHERE dv.id_venta = $1`,
+       WHERE dv.id_venta = $1
+       ORDER BY dv.id_detalle_venta`,
       [idVenta]
     );
 
-    // Para cada detalle, obtener sus toppings
     for (let detalle of detallesResult.rows) {
       const toppingsResult = await query(
         `SELECT dvt.*, t.nombre_topping
@@ -442,6 +499,7 @@ const getVentaCompleta = async (idVenta) => {
       detalle.toppings = toppingsResult.rows;
     }
 
+    venta.items = detallesResult.rows;
     venta.detalles = detallesResult.rows;
 
     return venta;

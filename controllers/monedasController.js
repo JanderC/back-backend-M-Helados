@@ -57,62 +57,60 @@ const getTasaVES = async (req, res) => {
 };
 
 /**
- * Actualizar tasa desde BCV (API)
+ * Actualizar tasa desde BCV (API dolarapi.com)
  * POST /api/monedas/actualizar-bcv
  */
 const actualizarDesdeBCV = async (req, res) => {
   try {
-    // Opción 1: API oficial del BCV (si está disponible)
-    // const bcvResponse = await axios.get('https://www.bcv.org.ve/api/tasa');
-    
-    // Opción 2: API alternativa (ejemplo con exchangerate-api)
-    // const response = await axios.get('https://api.exchangerate-api.com/v4/latest/USD');
-    
-    // Opción 3: Web scraping del BCV (más confiable pero requiere más procesamiento)
-    try {
-      const bcvResponse = await axios.get('https://www.bcv.org.ve/', {
-        timeout: 10000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0'
-        }
-      });
-
-      // Aquí deberías parsear el HTML para extraer la tasa
-      // Este es un ejemplo simplificado
-      const tasaBCV = await obtenerTasaBCVDesdeHTML(bcvResponse.data);
-
-      if (!tasaBCV) {
-        throw new Error('No se pudo extraer la tasa del BCV');
+    // Intentar obtener tasa desde la API de dolarapi.com
+    const bcvResponse = await axios.get('https://ve.dolarapi.com/v1/dolares/oficial', {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0'
       }
+    });
 
-      // Actualizar en la base de datos
-      const result = await query(
-        `UPDATE tipos_moneda 
-         SET tasa_cambio_usd = $1,
-             fecha_actualizacion = CURRENT_TIMESTAMP
-         WHERE codigo_moneda = 'VES'
-         RETURNING *`,
-        [tasaBCV]
-      );
+    if (!bcvResponse.data || !bcvResponse.data.promedio) {
+      throw new Error('No se pudo obtener la tasa del BCV');
+    }
 
-      res.json({
-        success: true,
-        message: 'Tasa actualizada desde BCV exitosamente',
-        data: result.rows[0]
-      });
+    const tasaBCV = parseFloat(bcvResponse.data.promedio);
 
-    } catch (apiError) {
-      // Si falla la API del BCV, intentar con API alternativa
-      console.warn('API BCV no disponible, intentando con API alternativa');
-      
-      // Usar API de monedas alternativa (ejemplo)
+    // Actualizar en la base de datos
+    const result = await query(
+      `UPDATE tipos_moneda 
+       SET tasa_cambio_usd = $1,
+           fecha_actualizacion = CURRENT_TIMESTAMP
+       WHERE codigo_moneda = 'VES'
+       RETURNING *`,
+      [tasaBCV]
+    );
+
+    res.json({
+      success: true,
+      message: 'Tasa actualizada desde BCV exitosamente',
+      data: {
+        ...result.rows[0],
+        fuente: bcvResponse.data.fuente,
+        fecha_bcv: bcvResponse.data.fechaActualizacion
+      }
+    });
+
+  } catch (error) {
+    console.error('Error al actualizar desde BCV:', error);
+    
+    // Intentar con API alternativa
+    try {
       const alternativeResponse = await axios.get(
-        'https://api.exchangerate-api.com/v4/latest/USD',
+        'https://pydolarve.org/api/v1/dollar?page=bcv',
         { timeout: 5000 }
       );
 
-      // Nota: Esta API puede no tener VES, ajusta según disponibilidad
-      const tasaVES = alternativeResponse.data.rates.VES || alternativeResponse.data.rates.VEF;
+      let tasaVES = null;
+
+      if (alternativeResponse.data?.monitors?.bcv?.price) {
+        tasaVES = parseFloat(alternativeResponse.data.monitors.bcv.price);
+      }
 
       if (!tasaVES) {
         throw new Error('Tasa VES no disponible en API alternativa');
@@ -131,17 +129,17 @@ const actualizarDesdeBCV = async (req, res) => {
         success: true,
         message: 'Tasa actualizada desde API alternativa',
         data: result.rows[0],
-        fuente: 'API alternativa'
+        fuente: 'API alternativa (PyDolarVe)'
+      });
+
+    } catch (alternativeError) {
+      console.error('Error en API alternativa:', alternativeError);
+      res.status(500).json({
+        success: false,
+        message: 'Error al actualizar tasa desde BCV. Intente actualización manual.',
+        error: error.message
       });
     }
-
-  } catch (error) {
-    console.error('Error al actualizar desde BCV:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al actualizar tasa desde BCV. Intente actualización manual.',
-      error: error.message
-    });
   }
 };
 
@@ -194,6 +192,55 @@ const actualizarManual = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error al actualizar tasa'
+    });
+  }
+};
+
+/**
+ * Actualizar múltiples tasas manualmente
+ * PUT /api/monedas/actualizar-multiples
+ */
+const actualizarMultiples = async (req, res) => {
+  try {
+    const { tasas } = req.body; // Array de {codigo_moneda, tasa_cambio_usd}
+
+    if (!Array.isArray(tasas) || tasas.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Se requiere un array de tasas'
+      });
+    }
+
+    const resultados = [];
+
+    for (const tasa of tasas) {
+      if (tasa.tasa_cambio_usd > 0) {
+        const result = await query(
+          `UPDATE tipos_moneda 
+           SET tasa_cambio_usd = $1,
+               fecha_actualizacion = CURRENT_TIMESTAMP
+           WHERE codigo_moneda = $2
+           RETURNING *`,
+          [tasa.tasa_cambio_usd, tasa.codigo_moneda]
+        );
+
+        if (result.rows.length > 0) {
+          resultados.push(result.rows[0]);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `${resultados.length} tasas actualizadas correctamente`,
+      data: resultados
+    });
+
+  } catch (error) {
+    console.error('Error al actualizar tasas múltiples:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al actualizar tasas'
     });
   }
 };
@@ -256,33 +303,11 @@ const convertirMonedas = async (req, res) => {
   }
 };
 
-/**
- * Función auxiliar para extraer tasa del HTML del BCV
- * Esta es una implementación simplificada
- */
-const obtenerTasaBCVDesdeHTML = async (html) => {
-  try {
-    // Aquí deberías implementar el parsing del HTML
-    // Ejemplo con regex (ajustar según estructura real del BCV)
-    const regex = /USD<\/strong>.*?<strong>([\d,.]+)<\/strong>/i;
-    const match = html.match(regex);
-    
-    if (match && match[1]) {
-      const tasa = match[1].replace(/\./g, '').replace(',', '.');
-      return parseFloat(tasa);
-    }
-    
-    return null;
-  } catch (error) {
-    console.error('Error al parsear HTML del BCV:', error);
-    return null;
-  }
-};
-
 module.exports = {
   getTasas,
   getTasaVES,
   actualizarDesdeBCV,
   actualizarManual,
+  actualizarMultiples,
   convertirMonedas
 };

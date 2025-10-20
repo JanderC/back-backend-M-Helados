@@ -5,6 +5,7 @@ const {
   getTasaVES,
   actualizarDesdeBCV,
   actualizarManual,
+  actualizarMultiples,
   convertirMonedas
 } = require('../controllers/monedasController');
 const { authenticate } = require('../middlewares/authMiddleware');
@@ -37,6 +38,13 @@ router.post('/actualizar-bcv', authenticate, isAdmin, actualizarDesdeBCV);
  * @access  Private (Admin)
  */
 router.put('/actualizar-manual', authenticate, isAdmin, actualizarManual);
+
+/**
+ * @route   PUT /api/monedas/actualizar-multiples
+ * @desc    Actualizar múltiples tasas manualmente
+ * @access  Private (Admin)
+ */
+router.put('/actualizar-multiples', authenticate, isAdmin, actualizarMultiples);
 
 /**
  * @route   POST /api/monedas/convertir
