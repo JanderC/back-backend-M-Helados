@@ -21,6 +21,9 @@ const ventasRoutes = require('./routes/ventas.routes');
 const cajaRoutes = require('./routes/caja.routes');
 const reportesRoutes = require('./routes/reportes.routes');
 const monedasRoutes = require('./routes/monedas.routes');
+const saboresRoutes = require('./routes/sabores.routes');
+const clientesRoutes = require('./routes/clientes.routes');
+const bcvRoutes = require('./routes/bcv.routes');
 
 // ============================================
 // INICIALIZACIÓN DE EXPRESS
@@ -112,6 +115,9 @@ app.use('/api/ventas', ventasRoutes);
 app.use('/api/caja', cajaRoutes);
 app.use('/api/reportes', reportesRoutes);
 app.use('/api/monedas', monedasRoutes);
+app.use('/api/sabores', saboresRoutes);
+app.use('/api/clientes', clientesRoutes);
+app.use('/api/bcv', bcvRoutes);
 
 // ============================================
 // MANEJO DE ERRORES
@@ -161,6 +167,8 @@ const startServer = async () => {
       console.log('   → GET  /api/caja/estado');
       console.log('   → GET  /api/reportes/dashboard');
       console.log('   → GET  /api/monedas/tasas');
+      console.log('   → GET  /api/sabores');
+      console.log('   → GET  /api/clientes');
       console.log('='.repeat(50) + '\n');
     });
 

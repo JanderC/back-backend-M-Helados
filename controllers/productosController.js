@@ -104,14 +104,16 @@ const createProducto = async (req, res) => {
       descripcion,
       id_categoria,
       precio_base,
+      precio_usd,
       costo_produccion,
+      costo_usd,
       imagen_url
     } = req.body;
 
-    if (!nombre_producto || !id_categoria || !precio_base) {
+    if (!nombre_producto || !id_categoria || !precio_base || !precio_usd) {
       return res.status(400).json({
         success: false,
-        message: 'Nombre, categoría y precio son requeridos'
+        message: 'Nombre, categoría, precio en pesos y precio en USD son requeridos'
       });
     }
 
@@ -124,10 +126,28 @@ const createProducto = async (req, res) => {
     }
 
     const result = await query(
-      `INSERT INTO productos (nombre_producto, descripcion, id_categoria, precio_base, costo_produccion, imagen_url)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO productos (
+        nombre_producto, 
+        descripcion, 
+        id_categoria, 
+        precio_base, 
+        precio_usd,
+        costo_produccion, 
+        costo_usd,
+        imagen_url
+      )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [nombre_producto, descripcion, id_categoria, precio_base, costo_produccion || null, imagen_url || null]
+      [
+        nombre_producto, 
+        descripcion, 
+        id_categoria, 
+        precio_base, 
+        precio_usd,
+        costo_produccion || null, 
+        costo_usd || null,
+        imagen_url || null
+      ]
     );
 
     res.status(201).json({
@@ -157,7 +177,9 @@ const updateProducto = async (req, res) => {
       descripcion,
       id_categoria,
       precio_base,
+      precio_usd,
       costo_produccion,
+      costo_usd,
       disponible,
       imagen_url
     } = req.body;
@@ -176,12 +198,25 @@ const updateProducto = async (req, res) => {
            descripcion = COALESCE($2, descripcion),
            id_categoria = COALESCE($3, id_categoria),
            precio_base = COALESCE($4, precio_base),
-           costo_produccion = COALESCE($5, costo_produccion),
-           disponible = COALESCE($6, disponible),
-           imagen_url = COALESCE($7, imagen_url)
-       WHERE id_producto = $8
+           precio_usd = COALESCE($5, precio_usd),
+           costo_produccion = COALESCE($6, costo_produccion),
+           costo_usd = COALESCE($7, costo_usd),
+           disponible = COALESCE($8, disponible),
+           imagen_url = COALESCE($9, imagen_url)
+       WHERE id_producto = $10
        RETURNING *`,
-      [nombre_producto, descripcion, id_categoria, precio_base, costo_produccion, disponible, imagen_url, id]
+      [
+        nombre_producto, 
+        descripcion, 
+        id_categoria, 
+        precio_base, 
+        precio_usd,
+        costo_produccion, 
+        costo_usd,
+        disponible, 
+        imagen_url, 
+        id
+      ]
     );
 
     if (result.rows.length === 0) {
