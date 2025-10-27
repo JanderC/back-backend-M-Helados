@@ -78,31 +78,35 @@ const createTopping = async (req, res) => {
     const {
       nombre_topping,
       descripcion,
-      precio_adicional,
-      costo_unitario,
+      precio_adicional_cop,
+      precio_adicional_usd,
+      costo_unitario_cop,
+      costo_unitario_usd,
       stock_actual,
       stock_minimo,
       unidad_medida
     } = req.body;
 
-    if (!nombre_topping || precio_adicional === undefined) {
+    if (!nombre_topping || precio_adicional_cop === undefined || precio_adicional_usd === undefined) {
       return res.status(400).json({
         success: false,
-        message: 'Nombre y precio adicional son requeridos'
+        message: 'Nombre, precio adicional en COP y USD son requeridos'
       });
     }
 
     const result = await query(
       `INSERT INTO toppings 
-       (nombre_topping, descripcion, precio_adicional, costo_unitario, 
-        stock_actual, stock_minimo, unidad_medida)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       (nombre_topping, descripcion, precio_adicional_cop, precio_adicional_usd,
+        costo_unitario_cop, costo_unitario_usd, stock_actual, stock_minimo, unidad_medida)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         nombre_topping,
         descripcion || null,
-        precio_adicional,
-        costo_unitario || null,
+        precio_adicional_cop,
+        precio_adicional_usd,
+        costo_unitario_cop || null,
+        costo_unitario_usd || null,
         stock_actual || 0,
         stock_minimo || 10,
         unidad_medida || 'unidades'
@@ -134,8 +138,10 @@ const updateTopping = async (req, res) => {
     const {
       nombre_topping,
       descripcion,
-      precio_adicional,
-      costo_unitario,
+      precio_adicional_cop,
+      precio_adicional_usd,
+      costo_unitario_cop,
+      costo_unitario_usd,
       stock_actual,
       stock_minimo,
       unidad_medida,
@@ -146,19 +152,23 @@ const updateTopping = async (req, res) => {
       `UPDATE toppings 
        SET nombre_topping = COALESCE($1, nombre_topping),
            descripcion = COALESCE($2, descripcion),
-           precio_adicional = COALESCE($3, precio_adicional),
-           costo_unitario = COALESCE($4, costo_unitario),
-           stock_actual = COALESCE($5, stock_actual),
-           stock_minimo = COALESCE($6, stock_minimo),
-           unidad_medida = COALESCE($7, unidad_medida),
-           disponible = COALESCE($8, disponible)
-       WHERE id_topping = $9
+           precio_adicional_cop = COALESCE($3, precio_adicional_cop),
+           precio_adicional_usd = COALESCE($4, precio_adicional_usd),
+           costo_unitario_cop = COALESCE($5, costo_unitario_cop),
+           costo_unitario_usd = COALESCE($6, costo_unitario_usd),
+           stock_actual = COALESCE($7, stock_actual),
+           stock_minimo = COALESCE($8, stock_minimo),
+           unidad_medida = COALESCE($9, unidad_medida),
+           disponible = COALESCE($10, disponible)
+       WHERE id_topping = $11
        RETURNING *`,
       [
         nombre_topping,
         descripcion,
-        precio_adicional,
-        costo_unitario,
+        precio_adicional_cop,
+        precio_adicional_usd,
+        costo_unitario_cop,
+        costo_unitario_usd,
         stock_actual,
         stock_minimo,
         unidad_medida,
