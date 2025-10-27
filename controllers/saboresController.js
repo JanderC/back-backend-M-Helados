@@ -78,7 +78,8 @@ const createSabor = async (req, res) => {
     const {
       nombre_sabor,
       descripcion,
-      precio_adicional
+      precio_adicional_cop,
+      precio_adicional_usd
     } = req.body;
 
     if (!nombre_sabor) {
@@ -88,11 +89,23 @@ const createSabor = async (req, res) => {
       });
     }
 
+    if (precio_adicional_cop === undefined || precio_adicional_usd === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Precio adicional en COP y USD son requeridos'
+      });
+    }
+
     const result = await query(
-      `INSERT INTO sabores (nombre_sabor, descripcion, precio_adicional)
-       VALUES ($1, $2, $3)
+      `INSERT INTO sabores (nombre_sabor, descripcion, precio_adicional_cop, precio_adicional_usd)
+       VALUES ($1, $2, $3, $4)
        RETURNING *`,
-      [nombre_sabor, descripcion || null, precio_adicional || 0]
+      [
+        nombre_sabor, 
+        descripcion || null, 
+        precio_adicional_cop, 
+        precio_adicional_usd
+      ]
     );
 
     res.status(201).json({
@@ -120,7 +133,8 @@ const updateSabor = async (req, res) => {
     const {
       nombre_sabor,
       descripcion,
-      precio_adicional,
+      precio_adicional_cop,
+      precio_adicional_usd,
       disponible
     } = req.body;
 
@@ -128,11 +142,19 @@ const updateSabor = async (req, res) => {
       `UPDATE sabores 
        SET nombre_sabor = COALESCE($1, nombre_sabor),
            descripcion = COALESCE($2, descripcion),
-           precio_adicional = COALESCE($3, precio_adicional),
-           disponible = COALESCE($4, disponible)
-       WHERE id_sabor = $5
+           precio_adicional_cop = COALESCE($3, precio_adicional_cop),
+           precio_adicional_usd = COALESCE($4, precio_adicional_usd),
+           disponible = COALESCE($5, disponible)
+       WHERE id_sabor = $6
        RETURNING *`,
-      [nombre_sabor, descripcion, precio_adicional, disponible, id]
+      [
+        nombre_sabor, 
+        descripcion, 
+        precio_adicional_cop, 
+        precio_adicional_usd, 
+        disponible, 
+        id
+      ]
     );
 
     if (result.rows.length === 0) {
