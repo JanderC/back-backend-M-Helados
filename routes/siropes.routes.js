@@ -27,7 +27,6 @@ router.put('/:id', isAdmin, updateSirope);
 // DELETE /api/siropes/:id - Eliminar sirope (solo admin)
 router.delete('/:id', isAdmin, deleteSirope);
 
-// POST /api/siropes/:id/ajustar-stock - Ajustar stock (solo admin)
 router.post('/:id/ajustar-stock', isAdmin, ajustarStock);
 
 module.exports = router;
