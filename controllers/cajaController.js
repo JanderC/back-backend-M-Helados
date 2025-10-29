@@ -37,17 +37,27 @@ const abrirCaja = async (req, res) => {
       [idUsuario, monto_inicial_usd, monto_inicial_ves, monto_inicial_cop, notas]
     );
 
+    // Obtener información completa del usuario
+    const cajaConUsuario = await query(
+      `SELECT ac.*, u.nombre_completo as usuario_apertura
+       FROM arqueo_caja ac
+       JOIN usuarios u ON ac.id_usuario_apertura = u.id_usuario
+       WHERE ac.id_arqueo = $1`,
+      [result.rows[0].id_arqueo]
+    );
+
     res.status(201).json({
       success: true,
       message: 'Caja abierta exitosamente',
-      data: result.rows[0]
+      data: cajaConUsuario.rows[0]
     });
 
   } catch (error) {
     console.error('Error al abrir caja:', error);
     res.status(500).json({
       success: false,
-      message: 'Error al abrir caja'
+      message: 'Error al abrir caja',
+      error: error.message
     });
   }
 };
@@ -59,9 +69,9 @@ const abrirCaja = async (req, res) => {
 const cerrarCaja = async (req, res) => {
   try {
     const {
-      monto_final_usd,
-      monto_final_ves,
-      monto_final_cop,
+      monto_final_usd = 0,
+      monto_final_ves = 0,
+      monto_final_cop = 0,
       notas
     } = req.body;
 
@@ -81,9 +91,11 @@ const cerrarCaja = async (req, res) => {
 
     const caja = cajaResult.rows[0];
 
-    // Calcular ventas esperadas del día
+    // Calcular ventas esperadas del día (en USD para referencia)
     const ventasResult = await query(
-      `SELECT COALESCE(SUM(total / tm.tasa_cambio_usd), 0) as total_usd
+      `SELECT 
+         COALESCE(SUM(total / tm.tasa_cambio_usd), 0) as total_usd,
+         COUNT(*) as total_ventas
        FROM ventas v
        JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
        WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'`,
@@ -91,8 +103,19 @@ const cerrarCaja = async (req, res) => {
     );
 
     const ventasEsperadas = parseFloat(ventasResult.rows[0].total_usd);
-    const montoFinalTotal = parseFloat(monto_final_usd);
-    const diferencia = montoFinalTotal - (parseFloat(caja.monto_inicial_usd) + ventasEsperadas);
+    
+    // Calcular diferencia basada en la moneda que tenga monto inicial
+    let diferencia = 0;
+    if (parseFloat(caja.monto_inicial_cop) > 0) {
+      const montoEsperadoCOP = parseFloat(caja.monto_inicial_cop) + (ventasEsperadas * 4000); // Aproximado
+      diferencia = parseFloat(monto_final_cop) - montoEsperadoCOP;
+    } else if (parseFloat(caja.monto_inicial_usd) > 0) {
+      const montoEsperadoUSD = parseFloat(caja.monto_inicial_usd) + ventasEsperadas;
+      diferencia = parseFloat(monto_final_usd) - montoEsperadoUSD;
+    } else if (parseFloat(caja.monto_inicial_ves) > 0) {
+      const montoEsperadoVES = parseFloat(caja.monto_inicial_ves) + (ventasEsperadas * 36); // Aproximado
+      diferencia = parseFloat(monto_final_ves) - montoEsperadoVES;
+    }
 
     // Cerrar caja
     const result = await query(
@@ -112,17 +135,30 @@ const cerrarCaja = async (req, res) => {
        ventasEsperadas, diferencia, notas, caja.id_arqueo]
     );
 
+    // Obtener información completa
+    const cajaConUsuarios = await query(
+      `SELECT ac.*, 
+       u1.nombre_completo as usuario_apertura,
+       u2.nombre_completo as usuario_cierre
+       FROM arqueo_caja ac
+       JOIN usuarios u1 ON ac.id_usuario_apertura = u1.id_usuario
+       LEFT JOIN usuarios u2 ON ac.id_usuario_cierre = u2.id_usuario
+       WHERE ac.id_arqueo = $1`,
+      [caja.id_arqueo]
+    );
+
     res.json({
       success: true,
       message: 'Caja cerrada exitosamente',
-      data: result.rows[0]
+      data: cajaConUsuarios.rows[0]
     });
 
   } catch (error) {
     console.error('Error al cerrar caja:', error);
     res.status(500).json({
       success: false,
-      message: 'Error al cerrar caja'
+      message: 'Error al cerrar caja',
+      error: error.message
     });
   }
 };
@@ -175,7 +211,8 @@ const getEstadoCaja = async (req, res) => {
     console.error('Error al obtener estado de caja:', error);
     res.status(500).json({
       success: false,
-      message: 'Error al obtener estado de caja'
+      message: 'Error al obtener estado de caja',
+      error: error.message
     });
   }
 };
@@ -199,31 +236,47 @@ const getFlujoCaja = async (req, res) => {
 
     if (fecha_inicio) {
       params.push(fecha_inicio);
-      sqlQuery += ` AND fc.fecha_transaccion >= ${params.length}`;
+      sqlQuery += ` AND fc.fecha_transaccion >= $${params.length}`;
     }
 
     if (fecha_fin) {
       params.push(fecha_fin);
-      sqlQuery += ` AND fc.fecha_transaccion <= ${params.length}`;
+      sqlQuery += ` AND fc.fecha_transaccion <= $${params.length}`;
     }
 
     if (tipo) {
       params.push(tipo);
-      sqlQuery += ` AND fc.tipo_transaccion = ${params.length}`;
+      sqlQuery += ` AND fc.tipo_transaccion = $${params.length}`;
     }
 
     sqlQuery += ' ORDER BY fc.fecha_transaccion DESC';
 
     const result = await query(sqlQuery, params);
 
-    // Calcular totales
+    // Calcular totales por moneda
+    const totalesPorMoneda = result.rows.reduce((acc, t) => {
+      const moneda = t.codigo_moneda;
+      if (!acc[moneda]) {
+        acc[moneda] = { ingresos: 0, egresos: 0 };
+      }
+      
+      if (t.tipo_transaccion === 'INGRESO') {
+        acc[moneda].ingresos += parseFloat(t.monto);
+      } else {
+        acc[moneda].egresos += parseFloat(t.monto);
+      }
+      
+      return acc;
+    }, {});
+
+    // Calcular totales en USD
     const ingresos = result.rows
       .filter(t => t.tipo_transaccion === 'INGRESO')
-      .reduce((sum, t) => sum + parseFloat(t.monto_usd), 0);
+      .reduce((sum, t) => sum + parseFloat(t.monto_usd || 0), 0);
 
     const egresos = result.rows
       .filter(t => t.tipo_transaccion === 'EGRESO')
-      .reduce((sum, t) => sum + parseFloat(t.monto_usd), 0);
+      .reduce((sum, t) => sum + parseFloat(t.monto_usd || 0), 0);
 
     res.json({
       success: true,
@@ -231,7 +284,8 @@ const getFlujoCaja = async (req, res) => {
       resumen: {
         total_ingresos: ingresos,
         total_egresos: egresos,
-        balance: ingresos - egresos
+        balance: ingresos - egresos,
+        por_moneda: totalesPorMoneda
       }
     });
 
@@ -239,13 +293,14 @@ const getFlujoCaja = async (req, res) => {
     console.error('Error al obtener flujo de caja:', error);
     res.status(500).json({
       success: false,
-      message: 'Error al obtener flujo de caja'
+      message: 'Error al obtener flujo de caja',
+      error: error.message
     });
   }
 };
 
 /**
- * Registrar transacción manual (egreso)
+ * Registrar transacción manual (ingreso/egreso)
  * POST /api/caja/transaccion
  */
 const registrarTransaccion = async (req, res) => {
@@ -253,19 +308,32 @@ const registrarTransaccion = async (req, res) => {
     const {
       tipo_transaccion,
       concepto,
-      descripcion,
+      descripcion = '',
       monto,
       id_moneda,
-      categoria_gasto,
-      metodo_pago
+      categoria_gasto = null,
+      metodo_pago = 'EFECTIVO'
     } = req.body;
 
     const idUsuario = req.user.id_usuario;
 
+    // Validar tipo de transacción
     if (!['INGRESO', 'EGRESO'].includes(tipo_transaccion)) {
       return res.status(400).json({
         success: false,
-        message: 'Tipo de transacción inválido'
+        message: 'Tipo de transacción inválido. Debe ser INGRESO o EGRESO'
+      });
+    }
+
+    // Validar que haya caja abierta
+    const cajaAbierta = await query(
+      "SELECT * FROM arqueo_caja WHERE estado = 'ABIERTA' ORDER BY fecha_apertura DESC LIMIT 1"
+    );
+
+    if (cajaAbierta.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No hay caja abierta. Debe abrir una caja primero'
       });
     }
 
@@ -275,8 +343,16 @@ const registrarTransaccion = async (req, res) => {
       [id_moneda]
     );
 
-    const montoUsd = monto / tasaResult.rows[0].tasa_cambio_usd;
+    if (tasaResult.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Moneda no encontrada'
+      });
+    }
 
+    const montoUsd = parseFloat(monto) / parseFloat(tasaResult.rows[0].tasa_cambio_usd);
+
+    // Registrar transacción
     const result = await query(
       `INSERT INTO flujo_caja (tipo_transaccion, concepto, descripcion, monto, id_moneda, 
        monto_usd, id_usuario, categoria_gasto, metodo_pago)
@@ -286,17 +362,28 @@ const registrarTransaccion = async (req, res) => {
        idUsuario, categoria_gasto, metodo_pago]
     );
 
+    // Obtener información completa
+    const transaccionCompleta = await query(
+      `SELECT fc.*, tm.codigo_moneda, tm.simbolo, u.nombre_completo as usuario
+       FROM flujo_caja fc
+       JOIN tipos_moneda tm ON fc.id_moneda = tm.id_moneda
+       JOIN usuarios u ON fc.id_usuario = u.id_usuario
+       WHERE fc.id_transaccion = $1`,
+      [result.rows[0].id_transaccion]
+    );
+
     res.status(201).json({
       success: true,
       message: 'Transacción registrada exitosamente',
-      data: result.rows[0]
+      data: transaccionCompleta.rows[0]
     });
 
   } catch (error) {
     console.error('Error al registrar transacción:', error);
     res.status(500).json({
       success: false,
-      message: 'Error al registrar transacción'
+      message: 'Error al registrar transacción',
+      error: error.message
     });
   }
 };
@@ -307,27 +394,32 @@ const registrarTransaccion = async (req, res) => {
  */
 const getResumenVentas = async (req, res) => {
   try {
-    const { periodo = 'diario' } = req.query;
+    const { periodo = 'diario', fecha_inicio, fecha_fin } = req.query;
 
-    let fechaInicio;
+    let fechaInicioCalc;
     const ahora = new Date();
 
-    switch (periodo) {
-      case 'diario':
-        fechaInicio = new Date(ahora.setHours(0, 0, 0, 0));
-        break;
-      case 'semanal':
-        fechaInicio = new Date(ahora.setDate(ahora.getDate() - 7));
-        break;
-      case 'mensual':
-        fechaInicio = new Date(ahora.setMonth(ahora.getMonth() - 1));
-        break;
-      default:
-        fechaInicio = new Date(ahora.setHours(0, 0, 0, 0));
+    // Usar fechas personalizadas si se proporcionan
+    if (fecha_inicio && fecha_fin) {
+      fechaInicioCalc = new Date(fecha_inicio);
+    } else {
+      // Usar período predeterminado
+      switch (periodo) {
+        case 'diario':
+          fechaInicioCalc = new Date(ahora.setHours(0, 0, 0, 0));
+          break;
+        case 'semanal':
+          fechaInicioCalc = new Date(ahora.setDate(ahora.getDate() - 7));
+          break;
+        case 'mensual':
+          fechaInicioCalc = new Date(ahora.setMonth(ahora.getMonth() - 1));
+          break;
+        default:
+          fechaInicioCalc = new Date(ahora.setHours(0, 0, 0, 0));
+      }
     }
 
-    const result = await query(
-      `SELECT 
+    let sqlQuery = `SELECT 
          COUNT(*) as total_ventas,
          COALESCE(SUM(total / tm.tasa_cambio_usd), 0) as total_usd,
          COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'USD' THEN total ELSE 0 END), 0) as total_usd_original,
@@ -335,13 +427,22 @@ const getResumenVentas = async (req, res) => {
          COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'COP' THEN total ELSE 0 END), 0) as total_cop
        FROM ventas v
        JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
-       WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'`,
-      [fechaInicio]
-    );
+       WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'`;
+
+    const params = [fechaInicioCalc];
+
+    if (fecha_fin) {
+      params.push(fecha_fin);
+      sqlQuery += ` AND v.fecha_venta <= $${params.length}`;
+    }
+
+    const result = await query(sqlQuery, params);
 
     res.json({
       success: true,
       periodo,
+      fecha_inicio: fecha_inicio || fechaInicioCalc.toISOString(),
+      fecha_fin: fecha_fin || new Date().toISOString(),
       data: result.rows[0]
     });
 
@@ -349,7 +450,8 @@ const getResumenVentas = async (req, res) => {
     console.error('Error al obtener resumen de ventas:', error);
     res.status(500).json({
       success: false,
-      message: 'Error al obtener resumen de ventas'
+      message: 'Error al obtener resumen de ventas',
+      error: error.message
     });
   }
 };
@@ -383,7 +485,8 @@ const getHistorialArqueos = async (req, res) => {
     console.error('Error al obtener historial:', error);
     res.status(500).json({
       success: false,
-      message: 'Error al obtener historial'
+      message: 'Error al obtener historial',
+      error: error.message
     });
   }
 };

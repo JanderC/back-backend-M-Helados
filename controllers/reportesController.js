@@ -3,6 +3,7 @@ const { query } = require('../config/database');
 /**
  * Dashboard - Resumen general
  * GET /api/reportes/dashboard
+ * CORREGIDO: Ahora considera el período de la caja abierta actual
  */
 const getDashboard = async (req, res) => {
   try {
@@ -11,18 +12,29 @@ const getDashboard = async (req, res) => {
     let fechaInicio;
     const ahora = new Date();
 
-    switch (periodo) {
-      case 'hoy':
-        fechaInicio = new Date(ahora.setHours(0, 0, 0, 0));
-        break;
-      case 'semana':
-        fechaInicio = new Date(ahora.setDate(ahora.getDate() - 7));
-        break;
-      case 'mes':
-        fechaInicio = new Date(ahora.setMonth(ahora.getMonth() - 1));
-        break;
-      default:
-        fechaInicio = new Date(ahora.setHours(0, 0, 0, 0));
+    // Verificar si hay caja abierta para usar su fecha de apertura
+    const cajaAbiertaResult = await query(
+      "SELECT fecha_apertura FROM arqueo_caja WHERE estado = 'ABIERTA' ORDER BY fecha_apertura DESC LIMIT 1"
+    );
+
+    // Si hay caja abierta, usar su fecha de apertura como fecha_inicio
+    if (cajaAbiertaResult.rows.length > 0 && periodo === 'hoy') {
+      fechaInicio = new Date(cajaAbiertaResult.rows[0].fecha_apertura);
+    } else {
+      // Usar el período solicitado
+      switch (periodo) {
+        case 'hoy':
+          fechaInicio = new Date(ahora.setHours(0, 0, 0, 0));
+          break;
+        case 'semana':
+          fechaInicio = new Date(ahora.setDate(ahora.getDate() - 7));
+          break;
+        case 'mes':
+          fechaInicio = new Date(ahora.setMonth(ahora.getMonth() - 1));
+          break;
+        default:
+          fechaInicio = new Date(ahora.setHours(0, 0, 0, 0));
+      }
     }
 
     // Resumen de ventas GENERAL (en USD)
@@ -92,10 +104,35 @@ const getDashboard = async (req, res) => {
       'SELECT COUNT(*) as total FROM toppings WHERE disponible = true'
     );
 
-    // Estado de caja
+    // Estado de caja con información de ventas
     const cajaResult = await query(
-      "SELECT * FROM arqueo_caja WHERE estado = 'ABIERTA' ORDER BY fecha_apertura DESC LIMIT 1"
+      `SELECT ac.*, 
+       u1.nombre_completo as usuario_apertura,
+       u2.nombre_completo as usuario_cierre
+       FROM arqueo_caja ac
+       JOIN usuarios u1 ON ac.id_usuario_apertura = u1.id_usuario
+       LEFT JOIN usuarios u2 ON ac.id_usuario_cierre = u2.id_usuario
+       WHERE ac.estado = 'ABIERTA'
+       ORDER BY ac.fecha_apertura DESC
+       LIMIT 1`
     );
+
+    // Si hay caja abierta, agregar ventas del día
+    let estadoCaja = null;
+    if (cajaResult.rows.length > 0) {
+      estadoCaja = cajaResult.rows[0];
+      
+      const ventasCajaResult = await query(
+        `SELECT COUNT(*) as total_ventas, 
+         COALESCE(SUM(total / tm.tasa_cambio_usd), 0) as total_usd
+         FROM ventas v
+         JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
+         WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'`,
+        [estadoCaja.fecha_apertura]
+      );
+      
+      estadoCaja.ventas_dia = ventasCajaResult.rows[0];
+    }
 
     // Inventario bajo
     const inventarioBajoResult = await query(
@@ -124,10 +161,11 @@ const getDashboard = async (req, res) => {
         toppings_mas_usados: toppingsResult.rows,
         total_productos: parseInt(productosCountResult.rows[0].total),
         total_toppings: parseInt(toppingsCountResult.rows[0].total),
-        estado_caja: cajaResult.rows[0] || null,
+        estado_caja: estadoCaja,
         inventario_bajo: inventarioBajoResult.rows,
         ventas_por_estado: ventasEstadoResult.rows,
-        periodo
+        periodo,
+        fecha_desde: fechaInicio.toISOString()
       }
     });
 
@@ -135,15 +173,13 @@ const getDashboard = async (req, res) => {
     console.error('Error al obtener dashboard:', error);
     res.status(500).json({
       success: false,
-      message: 'Error al obtener dashboard'
+      message: 'Error al obtener dashboard',
+      error: error.message
     });
   }
 };
 
-/**
- * Generar reporte mensual
- * POST /api/reportes/generar-mensual
- */
+// ... resto del código sin cambios ...
 const generarReporteMensual = async (req, res) => {
   try {
     const { mes, anio } = req.body;
@@ -185,10 +221,6 @@ const generarReporteMensual = async (req, res) => {
   }
 };
 
-/**
- * Obtener reportes mensuales
- * GET /api/reportes/mensuales
- */
 const getReportesMensuales = async (req, res) => {
   try {
     const { limit = 12 } = req.query;
@@ -216,10 +248,6 @@ const getReportesMensuales = async (req, res) => {
   }
 };
 
-/**
- * Productos más vendidos
- * GET /api/reportes/productos-vendidos
- */
 const getProductosVendidos = async (req, res) => {
   try {
     const { fecha_inicio, fecha_fin, limit = 10 } = req.query;
@@ -274,10 +302,6 @@ const getProductosVendidos = async (req, res) => {
   }
 };
 
-/**
- * Toppings más usados
- * GET /api/reportes/toppings-usados
- */
 const getToppingsUsados = async (req, res) => {
   try {
     const { fecha_inicio, fecha_fin, limit = 10 } = req.query;
@@ -331,10 +355,6 @@ const getToppingsUsados = async (req, res) => {
   }
 };
 
-/**
- * Reporte de inventario
- * GET /api/reportes/inventario
- */
 const getReporteInventario = async (req, res) => {
   try {
     // Toppings
@@ -413,10 +433,6 @@ const getReporteInventario = async (req, res) => {
   }
 };
 
-/**
- * Ventas por categoría
- * GET /api/reportes/ventas-categoria
- */
 const getVentasPorCategoria = async (req, res) => {
   try {
     const { fecha_inicio, fecha_fin } = req.query;
