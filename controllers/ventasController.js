@@ -38,7 +38,6 @@ const getVentas = async (req, res) => {
     }
 
     if (estado) {
-      // Manejar múltiples estados separados por coma
       const estados = estado.split(',').map(e => e.trim());
       const estadosPlaceholders = estados.map((_, idx) => `$${params.length + idx + 1}`).join(',');
       estados.forEach(e => params.push(e));
@@ -81,7 +80,7 @@ const getVentas = async (req, res) => {
 };
 
 /**
- * Obtener venta por ID con detalles completos
+ * Obtener venta por ID con detalles completos (incluye siropes)
  * GET /api/ventas/:id
  */
 const getVentaById = async (req, res) => {
@@ -118,7 +117,7 @@ const getVentaById = async (req, res) => {
       [id]
     );
 
-    // Para cada detalle, obtener toppings y sabores
+    // Para cada detalle, obtener toppings, sabores y siropes
     const detalles = await Promise.all(
       detallesResult.rows.map(async (detalle) => {
         // Obtener toppings
@@ -139,10 +138,20 @@ const getVentaById = async (req, res) => {
           [detalle.id_detalle_venta]
         );
 
+        // NUEVO - Obtener siropes
+        const siropesResult = await query(
+          `SELECT dvsi.*, si.nombre_sirope
+           FROM detalle_ventas_siropes dvsi
+           JOIN siropes si ON dvsi.id_sirope = si.id_sirope
+           WHERE dvsi.id_detalle_venta = $1`,
+          [detalle.id_detalle_venta]
+        );
+
         return {
           ...detalle,
           toppings: toppingsResult.rows,
-          sabores: saboresResult.rows
+          sabores: saboresResult.rows,
+          siropes: siropesResult.rows // NUEVO
         };
       })
     );
@@ -166,13 +175,8 @@ const getVentaById = async (req, res) => {
 };
 
 /**
- * Crear venta con sistema COP → USD → VES
+ * Crear venta con sistema COP → USD → VES (incluye siropes)
  * POST /api/ventas
- * 
- * Acepta múltiples formatos:
- * - productos o detalles
- * - id_moneda o codigo_moneda
- * - monto_total o total
  */
 const createVenta = async (req, res) => {
   const client = await getClient();
@@ -180,12 +184,12 @@ const createVenta = async (req, res) => {
   try {
     const { 
       productos,
-      detalles, // Acepta también 'detalles'
+      detalles,
       id_moneda,
-      codigo_moneda, // Acepta también 'codigo_moneda'
+      codigo_moneda,
       monto_total,
-      total, // Acepta también 'total'
-      nombre_cliente, // Nombre del cliente (opcional)
+      total,
+      nombre_cliente,
       metodo_pago,
       notas 
     } = req.body;
@@ -207,7 +211,6 @@ const createVenta = async (req, res) => {
     // Obtener id_moneda
     let monedaId = id_moneda;
     
-    // Si viene codigo_moneda en lugar de id_moneda, buscarlo
     if (!monedaId && codigo_moneda) {
       const monedaResult = await client.query(
         'SELECT id_moneda FROM tipos_moneda WHERE codigo_moneda = $1',
@@ -235,7 +238,7 @@ const createVenta = async (req, res) => {
     );
     const numeroFactura = `FACT-${String(facturaResult.rows[0].next_num).padStart(6, '0')}`;
 
-    // Calcular subtotal en COP (moneda base)
+    // Calcular subtotal en COP (moneda base) - INCLUYE SIROPES
     let subtotalCOP = 0;
     for (const prod of items) {
       const precioProducto = parseFloat(prod.precio_unitario) * parseInt(prod.cantidad);
@@ -245,7 +248,11 @@ const createVenta = async (req, res) => {
       const precioSabores = (prod.sabores || []).reduce((sum, s) => 
         sum + (parseFloat(s.precio_unitario || s.precio || 0) * parseInt(prod.cantidad)), 0
       );
-      subtotalCOP += precioProducto + precioToppings + precioSabores;
+      // NUEVO - Agregar precio de siropes
+      const precioSiropes = (prod.siropes || []).reduce((sum, s) => 
+        sum + (parseFloat(s.precio_unitario || s.precio || 0) * parseInt(prod.cantidad)), 0
+      );
+      subtotalCOP += precioProducto + precioToppings + precioSabores + precioSiropes;
     }
 
     // Obtener información de la moneda seleccionada
@@ -268,7 +275,6 @@ const createVenta = async (req, res) => {
 
     // Sistema de conversión COP → USD → VES
     if (monedaSeleccionada === 'VES') {
-      // Paso 1: Obtener tasa COP → USD
       const tasaCOPResult = await client.query(
         "SELECT tasa_cambio_usd FROM tipos_moneda WHERE codigo_moneda = 'COP'"
       );
@@ -282,11 +288,8 @@ const createVenta = async (req, res) => {
       }
 
       const tasaCOP_USD = parseFloat(tasaCOPResult.rows[0].tasa_cambio_usd);
-      
-      // Paso 2: Convertir COP a USD
       const totalUSD = subtotalCOP / tasaCOP_USD;
 
-      // Paso 3: Obtener tasa USD → VES (BCV)
       const tasaVESResult = await client.query(
         "SELECT tasa_cambio_usd FROM tipos_moneda WHERE codigo_moneda = 'VES'"
       );
@@ -300,8 +303,6 @@ const createVenta = async (req, res) => {
       }
 
       const tasaUSD_VES = parseFloat(tasaVESResult.rows[0].tasa_cambio_usd);
-
-      // Paso 4: Convertir USD a VES
       totalFinal = totalUSD * tasaUSD_VES;
       montoMonedaOriginal = totalFinal;
 
@@ -314,11 +315,9 @@ const createVenta = async (req, res) => {
       });
 
     } else if (monedaSeleccionada === 'COP') {
-      // Sin conversión, mantener precio en COP
       totalFinal = subtotalCOP;
       montoMonedaOriginal = subtotalCOP;
     } else if (monedaSeleccionada === 'USD') {
-      // Convertir COP a USD
       const tasaCOPResult = await client.query(
         "SELECT tasa_cambio_usd FROM tipos_moneda WHERE codigo_moneda = 'COP'"
       );
@@ -329,7 +328,7 @@ const createVenta = async (req, res) => {
       }
     }
 
-    // Insertar venta (incluye nombre_cliente)
+    // Insertar venta
     const ventaResult = await client.query(
       `INSERT INTO ventas 
        (numero_factura, nombre_cliente, id_usuario, subtotal, impuesto, descuento, 
@@ -354,7 +353,7 @@ const createVenta = async (req, res) => {
 
     const id_venta = ventaResult.rows[0].id_venta;
 
-    // Insertar detalles de venta con toppings y sabores
+    // Insertar detalles de venta con toppings, sabores y siropes
     for (const prod of items) {
       // Insertar detalle del producto
       const detalleResult = await client.query(
@@ -378,13 +377,13 @@ const createVenta = async (req, res) => {
         for (const topping of prod.toppings) {
           await client.query(
             `INSERT INTO detalle_ventas_toppings 
-             (id_detalle_venta, id_topping, cantidad, precio_unitario)
+             (id_detalle_venta, id_topping, cantidad, precio_adicional)
              VALUES ($1, $2, $3, $4)`,
             [
               id_detalle_venta,
               topping.id_topping,
               prod.cantidad,
-              topping.precio_unitario || topping.precio
+              topping.precio_unitario || topping.precio || 0
             ]
           );
         }
@@ -398,6 +397,23 @@ const createVenta = async (req, res) => {
              (id_detalle_venta, id_sabor)
              VALUES ($1, $2)`,
             [id_detalle_venta, sabor.id_sabor]
+          );
+        }
+      }
+
+      // NUEVO - Insertar siropes si existen
+      if (prod.siropes && prod.siropes.length > 0) {
+        for (const sirope of prod.siropes) {
+          await client.query(
+            `INSERT INTO detalle_ventas_siropes 
+             (id_detalle_venta, id_sirope, cantidad, precio_adicional)
+             VALUES ($1, $2, $3, $4)`,
+            [
+              id_detalle_venta,
+              sirope.id_sirope,
+              prod.cantidad,
+              sirope.precio_unitario || sirope.precio || 0
+            ]
           );
         }
       }
