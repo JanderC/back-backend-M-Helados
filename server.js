@@ -24,6 +24,7 @@ const monedasRoutes = require('./routes/monedas.routes');
 const saboresRoutes = require('./routes/sabores.routes');
 const clientesRoutes = require('./routes/clientes.routes');
 const bcvRoutes = require('./routes/bcv.routes');
+const siropesRoutes = require('./routes/siropes.routes');
 
 // ============================================
 // INICIALIZACIÓN DE EXPRESS
@@ -118,6 +119,7 @@ app.use('/api/monedas', monedasRoutes);
 app.use('/api/sabores', saboresRoutes);
 app.use('/api/clientes', clientesRoutes);
 app.use('/api/bcv', bcvRoutes);
+app.use('/api/siropes', siropesRoutes);
 
 // ============================================
 // MANEJO DE ERRORES
