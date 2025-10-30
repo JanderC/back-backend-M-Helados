@@ -17,12 +17,12 @@ router.get('/', getSiropes);
 
 router.get('/:id', getSiropeById);
 
-router.post('/', isAdmin, createSirope);
+router.post('/', authenticate, isAdmin, createSirope);
 
-router.put('/:id', isAdmin, updateSirope);
+router.put('/:id',authenticate, isAdmin, updateSirope);
 
-router.delete('/:id', isAdmin, deleteSirope);
+router.delete('/:id',authenticate, isAdmin, deleteSirope);
 
-router.post('/:id/ajustar-stock', isAdmin, ajustarStock);
+router.post('/:id/ajustar-stock',authenticate, isAdmin, ajustarStock);
 
 module.exports = router;
