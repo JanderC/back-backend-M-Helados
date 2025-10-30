@@ -138,7 +138,7 @@ const getVentaById = async (req, res) => {
           [detalle.id_detalle_venta]
         );
 
-        // NUEVO - Obtener siropes
+        // Obtener siropes
         const siropesResult = await query(
           `SELECT dvsi.*, si.nombre_sirope
            FROM detalle_ventas_siropes dvsi
@@ -151,7 +151,7 @@ const getVentaById = async (req, res) => {
           ...detalle,
           toppings: toppingsResult.rows,
           sabores: saboresResult.rows,
-          siropes: siropesResult.rows // NUEVO
+          siropes: siropesResult.rows
         };
       })
     );
@@ -248,7 +248,6 @@ const createVenta = async (req, res) => {
       const precioSabores = (prod.sabores || []).reduce((sum, s) => 
         sum + (parseFloat(s.precio_unitario || s.precio || 0) * parseInt(prod.cantidad)), 0
       );
-      // NUEVO - Agregar precio de siropes
       const precioSiropes = (prod.siropes || []).reduce((sum, s) => 
         sum + (parseFloat(s.precio_unitario || s.precio || 0) * parseInt(prod.cantidad)), 0
       );
@@ -346,7 +345,7 @@ const createVenta = async (req, res) => {
         monedaId,
         montoMonedaOriginal,
         metodo_pago || 'EFECTIVO',
-        'COMPLETADA',
+        'PENDIENTE', // CAMBIADO A PENDIENTE para que los despensadores puedan procesarla
         notas || null
       ]
     );
@@ -401,7 +400,7 @@ const createVenta = async (req, res) => {
         }
       }
 
-      // NUEVO - Insertar siropes si existen
+      // Insertar siropes si existen
       if (prod.siropes && prod.siropes.length > 0) {
         for (const sirope of prod.siropes) {
           await client.query(
@@ -420,6 +419,35 @@ const createVenta = async (req, res) => {
     }
 
     await client.query('COMMIT');
+
+    // ========================================
+    // 🔥 EMITIR EVENTO DE SOCKET - NUEVA VENTA
+    // ========================================
+    const io = req.app.get('io');
+    if (io) {
+      const ventaCompleta = {
+        id_venta,
+        numero_factura: numeroFactura,
+        nombre_cliente: nombre_cliente || 'Cliente General',
+        total: totalFinal,
+        codigo_moneda: monedaSeleccionada,
+        estado_venta: 'PENDIENTE',
+        fecha_venta: new Date(),
+        cantidad_items: items.length
+      };
+
+      console.log('📡 Emitiendo evento de nueva venta:', numero_factura);
+      
+      // Emitir a despensadores
+      io.to('despensadores').emit('pedido_nuevo', {
+        venta: ventaCompleta,
+        mensaje: `Nueva orden: ${numeroFactura}`,
+        timestamp: new Date()
+      });
+
+      // Emitir a admins
+      io.to('admins').emit('venta_registrada', ventaCompleta);
+    }
 
     res.status(201).json({
       success: true,
@@ -453,10 +481,10 @@ const createVenta = async (req, res) => {
 const cambiarEstadoVenta = async (req, res) => {
   try {
     const { id } = req.params;
-    const { estado } = req.body;
+    const { estado_venta } = req.body;
 
     const estadosValidos = ['PENDIENTE', 'EN_PROCESO', 'COMPLETADA', 'CANCELADA'];
-    if (!estadosValidos.includes(estado)) {
+    if (!estadosValidos.includes(estado_venta)) {
       return res.status(400).json({
         success: false,
         message: 'Estado no válido'
@@ -468,13 +496,28 @@ const cambiarEstadoVenta = async (req, res) => {
        SET estado_venta = $1
        WHERE id_venta = $2
        RETURNING *`,
-      [estado, id]
+      [estado_venta, id]
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Venta no encontrada'
+      });
+    }
+
+    // ========================================
+    // 🔥 EMITIR EVENTO DE SOCKET - CAMBIO DE ESTADO
+    // ========================================
+    const io = req.app.get('io');
+    if (io) {
+      console.log(`📡 Emitiendo cambio de estado: Venta ${id} -> ${estado_venta}`);
+      
+      io.emit('estado_pedido_actualizado', {
+        id_venta: id,
+        estado_venta: estado_venta,
+        actualizado_por: req.user?.username || 'Sistema',
+        timestamp: new Date()
       });
     }
 
