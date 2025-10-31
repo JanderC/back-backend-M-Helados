@@ -269,63 +269,19 @@ const createVenta = async (req, res) => {
     }
 
     const monedaSeleccionada = monedaResult.rows[0].codigo_moneda;
-    let totalFinal = subtotalCOP;
-    let montoMonedaOriginal = subtotalCOP;
+    
+    // 🔥 CAMBIO CRÍTICO: El frontend ya envía el total en la moneda seleccionada
+    // NO debemos recalcular, solo usar el total enviado
+    let totalFinal = parseFloat(totalVenta);
+    let montoMonedaOriginal = parseFloat(totalVenta);
+    let subtotalFinal = parseFloat(totalVenta); // El subtotal también está en la moneda seleccionada
 
-    // Sistema de conversión COP → USD → VES
-    if (monedaSeleccionada === 'VES') {
-      const tasaCOPResult = await client.query(
-        "SELECT tasa_cambio_usd FROM tipos_moneda WHERE codigo_moneda = 'COP'"
-      );
-
-      if (tasaCOPResult.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(500).json({
-          success: false,
-          message: 'Tasa COP no configurada en el sistema'
-        });
-      }
-
-      const tasaCOP_USD = parseFloat(tasaCOPResult.rows[0].tasa_cambio_usd);
-      const totalUSD = subtotalCOP / tasaCOP_USD;
-
-      const tasaVESResult = await client.query(
-        "SELECT tasa_cambio_usd FROM tipos_moneda WHERE codigo_moneda = 'VES'"
-      );
-
-      if (tasaVESResult.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(500).json({
-          success: false,
-          message: 'Tasa VES no configurada en el sistema'
-        });
-      }
-
-      const tasaUSD_VES = parseFloat(tasaVESResult.rows[0].tasa_cambio_usd);
-      totalFinal = totalUSD * tasaUSD_VES;
-      montoMonedaOriginal = totalFinal;
-
-      console.log('Conversión COP→VES:', {
-        subtotalCOP,
-        tasaCOP_USD,
-        totalUSD,
-        tasaUSD_VES,
-        totalVES: totalFinal
-      });
-
-    } else if (monedaSeleccionada === 'COP') {
-      totalFinal = subtotalCOP;
-      montoMonedaOriginal = subtotalCOP;
-    } else if (monedaSeleccionada === 'USD') {
-      const tasaCOPResult = await client.query(
-        "SELECT tasa_cambio_usd FROM tipos_moneda WHERE codigo_moneda = 'COP'"
-      );
-      if (tasaCOPResult.rows.length > 0) {
-        const tasaCOP_USD = parseFloat(tasaCOPResult.rows[0].tasa_cambio_usd);
-        totalFinal = subtotalCOP / tasaCOP_USD;
-        montoMonedaOriginal = totalFinal;
-      }
-    }
+    console.log('💰 Venta recibida:', {
+      monedaSeleccionada,
+      totalRecibido: totalVenta,
+      totalFinal,
+      subtotalCalculado: subtotalCOP
+    });
 
     // Insertar venta
     const ventaResult = await client.query(
@@ -338,14 +294,14 @@ const createVenta = async (req, res) => {
         numeroFactura,
         nombre_cliente || null,
         id_usuario,
-        subtotalCOP,
+        totalFinal, // 🔥 CORREGIDO: usar totalFinal en vez de subtotalCOP
         0,
         0,
         totalFinal,
         monedaId,
         montoMonedaOriginal,
         metodo_pago || 'EFECTIVO',
-        'PENDIENTE', // CAMBIADO A PENDIENTE para que los despensadores puedan procesarla
+        'PENDIENTE',
         notas || null
       ]
     );
