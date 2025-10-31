@@ -421,7 +421,58 @@ const createVenta = async (req, res) => {
     await client.query('COMMIT');
 
     // ========================================
-    // 🔥 EMITIR EVENTO DE SOCKET - NUEVA VENTA
+    // 🔥 CARGAR DETALLES COMPLETOS DE LA VENTA PARA SOCKET
+    // ========================================
+    // Obtener detalles de productos
+    const detallesResult = await client.query(
+      `SELECT dv.*, p.nombre_producto, p.imagen_url
+       FROM detalle_ventas dv
+       JOIN productos p ON dv.id_producto = p.id_producto
+       WHERE dv.id_venta = $1`,
+      [id_venta]
+    );
+
+    // Para cada detalle, obtener toppings, sabores y siropes
+    const detallesCompletos = await Promise.all(
+      detallesResult.rows.map(async (detalle) => {
+        // Obtener toppings
+        const toppingsResult = await client.query(
+          `SELECT dvt.*, t.nombre_topping
+           FROM detalle_ventas_toppings dvt
+           JOIN toppings t ON dvt.id_topping = t.id_topping
+           WHERE dvt.id_detalle_venta = $1`,
+          [detalle.id_detalle_venta]
+        );
+
+        // Obtener sabores
+        const saboresResult = await client.query(
+          `SELECT dvs.*, s.nombre_sabor
+           FROM detalles_venta_sabores dvs
+           JOIN sabores s ON dvs.id_sabor = s.id_sabor
+           WHERE dvs.id_detalle_venta = $1`,
+          [detalle.id_detalle_venta]
+        );
+
+        // Obtener siropes
+        const siropesResult = await client.query(
+          `SELECT dvsi.*, si.nombre_sirope
+           FROM detalle_ventas_siropes dvsi
+           JOIN siropes si ON dvsi.id_sirope = si.id_sirope
+           WHERE dvsi.id_detalle_venta = $1`,
+          [detalle.id_detalle_venta]
+        );
+
+        return {
+          ...detalle,
+          toppings: toppingsResult.rows,
+          sabores: saboresResult.rows,
+          siropes: siropesResult.rows
+        };
+      })
+    );
+
+    // ========================================
+    // 🔥 EMITIR EVENTO DE SOCKET - NUEVA VENTA CON DETALLES
     // ========================================
     const io = req.app.get('io');
     if (io) {
@@ -433,7 +484,9 @@ const createVenta = async (req, res) => {
         codigo_moneda: monedaSeleccionada,
         estado_venta: 'PENDIENTE',
         fecha_venta: new Date(),
-        cantidad_items: items.length
+        cantidad_items: items.length,
+        items: detallesCompletos, // 🔥 AGREGADO: detalles completos
+        detalles: detallesCompletos // 🔥 AGREGADO: alias para compatibilidad
       };
 
       console.log('📡 Emitiendo evento de nueva venta:', numeroFactura);
