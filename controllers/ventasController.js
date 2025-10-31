@@ -436,7 +436,7 @@ const createVenta = async (req, res) => {
         cantidad_items: items.length
       };
 
-      console.log('📡 Emitiendo evento de nueva venta:', numero_factura);
+      console.log('📡 Emitiendo evento de nueva venta:', numeroFactura);
       
       // Emitir a despensadores
       io.to('despensadores').emit('pedido_nuevo', {
