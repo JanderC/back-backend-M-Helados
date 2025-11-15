@@ -79,7 +79,9 @@ const createSabor = async (req, res) => {
       nombre_sabor,
       descripcion,
       precio_adicional_cop,
-      precio_adicional_usd
+      precio_adicional_usd,
+      // 🔥 Mantener compatibilidad con precio_adicional viejo
+      precio_adicional
     } = req.body;
 
     if (!nombre_sabor) {
@@ -89,22 +91,26 @@ const createSabor = async (req, res) => {
       });
     }
 
-    if (precio_adicional_cop === undefined || precio_adicional_usd === undefined) {
-      return res.status(400).json({
-        success: false,
-        message: 'Precio adicional en COP y USD son requeridos'
-      });
-    }
+    // 🔥 Si no se envían precios específicos, usar precio_adicional como COP y calcular USD
+    const precioCOP = precio_adicional_cop !== undefined 
+      ? precio_adicional_cop 
+      : (precio_adicional || 0);
+    
+    const precioUSD = precio_adicional_usd !== undefined 
+      ? precio_adicional_usd 
+      : (precio_adicional ? parseFloat(precio_adicional) / 4000 : 0); // Tasa aproximada
 
+    // 🔥 Verificar si las columnas nuevas existen
     const result = await query(
-      `INSERT INTO sabores (nombre_sabor, descripcion, precio_adicional_cop, precio_adicional_usd)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO sabores (nombre_sabor, descripcion, precio_adicional_cop, precio_adicional_usd, precio_adicional)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
       [
         nombre_sabor, 
         descripcion || null, 
-        precio_adicional_cop, 
-        precio_adicional_usd
+        precioCOP, 
+        precioUSD,
+        precioCOP // Mantener para compatibilidad
       ]
     );
 
@@ -116,10 +122,39 @@ const createSabor = async (req, res) => {
 
   } catch (error) {
     console.error('Error al crear sabor:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al crear sabor'
-    });
+    
+    // 🔥 Si falla porque las columnas no existen, usar solo precio_adicional
+    if (error.code === '42703') { // Undefined column error
+      try {
+        const result = await query(
+          `INSERT INTO sabores (nombre_sabor, descripcion, precio_adicional)
+           VALUES ($1, $2, $3)
+           RETURNING *`,
+          [
+            nombre_sabor, 
+            descripcion || null, 
+            precio_adicional_cop || precio_adicional || 0
+          ]
+        );
+
+        res.status(201).json({
+          success: true,
+          message: 'Sabor creado exitosamente',
+          data: result.rows[0]
+        });
+      } catch (fallbackError) {
+        console.error('Error en fallback:', fallbackError);
+        res.status(500).json({
+          success: false,
+          message: 'Error al crear sabor'
+        });
+      }
+    } else {
+      res.status(500).json({
+        success: false,
+        message: 'Error al crear sabor'
+      });
+    }
   }
 };
 
@@ -135,40 +170,81 @@ const updateSabor = async (req, res) => {
       descripcion,
       precio_adicional_cop,
       precio_adicional_usd,
+      precio_adicional,
       disponible
     } = req.body;
 
-    const result = await query(
-      `UPDATE sabores 
-       SET nombre_sabor = COALESCE($1, nombre_sabor),
-           descripcion = COALESCE($2, descripcion),
-           precio_adicional_cop = COALESCE($3, precio_adicional_cop),
-           precio_adicional_usd = COALESCE($4, precio_adicional_usd),
-           disponible = COALESCE($5, disponible)
-       WHERE id_sabor = $6
-       RETURNING *`,
-      [
-        nombre_sabor, 
-        descripcion, 
-        precio_adicional_cop, 
-        precio_adicional_usd, 
-        disponible, 
-        id
-      ]
-    );
+    // 🔥 Intentar actualizar con los campos nuevos
+    try {
+      const result = await query(
+        `UPDATE sabores 
+         SET nombre_sabor = COALESCE($1, nombre_sabor),
+             descripcion = COALESCE($2, descripcion),
+             precio_adicional_cop = COALESCE($3, precio_adicional_cop),
+             precio_adicional_usd = COALESCE($4, precio_adicional_usd),
+             precio_adicional = COALESCE($5, precio_adicional),
+             disponible = COALESCE($6, disponible)
+         WHERE id_sabor = $7
+         RETURNING *`,
+        [
+          nombre_sabor, 
+          descripcion, 
+          precio_adicional_cop, 
+          precio_adicional_usd,
+          precio_adicional_cop || precio_adicional,
+          disponible, 
+          id
+        ]
+      );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Sabor no encontrado'
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Sabor no encontrado'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Sabor actualizado exitosamente',
+        data: result.rows[0]
       });
-    }
+    } catch (error) {
+      // 🔥 Fallback si las columnas no existen
+      if (error.code === '42703') {
+        const result = await query(
+          `UPDATE sabores 
+           SET nombre_sabor = COALESCE($1, nombre_sabor),
+               descripcion = COALESCE($2, descripcion),
+               precio_adicional = COALESCE($3, precio_adicional),
+               disponible = COALESCE($4, disponible)
+           WHERE id_sabor = $5
+           RETURNING *`,
+          [
+            nombre_sabor, 
+            descripcion, 
+            precio_adicional_cop || precio_adicional,
+            disponible, 
+            id
+          ]
+        );
 
-    res.json({
-      success: true,
-      message: 'Sabor actualizado exitosamente',
-      data: result.rows[0]
-    });
+        if (result.rows.length === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'Sabor no encontrado'
+          });
+        }
+
+        res.json({
+          success: true,
+          message: 'Sabor actualizado exitosamente',
+          data: result.rows[0]
+        });
+      } else {
+        throw error;
+      }
+    }
 
   } catch (error) {
     console.error('Error al actualizar sabor:', error);
