@@ -15,7 +15,6 @@ const abrirCaja = async (req, res) => {
 
     const idUsuario = req.user.id_usuario;
 
-    // Verificar si hay caja abierta
     const cajaAbierta = await query(
       "SELECT * FROM arqueo_caja WHERE estado = 'ABIERTA' ORDER BY fecha_apertura DESC LIMIT 1"
     );
@@ -28,7 +27,6 @@ const abrirCaja = async (req, res) => {
       });
     }
 
-    // Crear nueva caja
     const result = await query(
       `INSERT INTO arqueo_caja (id_usuario_apertura, monto_inicial_usd, monto_inicial_ves, 
        monto_inicial_cop, notas_apertura)
@@ -37,7 +35,6 @@ const abrirCaja = async (req, res) => {
       [idUsuario, monto_inicial_usd, monto_inicial_ves, monto_inicial_cop, notas]
     );
 
-    // Obtener información completa del usuario
     const cajaConUsuario = await query(
       `SELECT ac.*, u.nombre_completo as usuario_apertura
        FROM arqueo_caja ac
@@ -63,7 +60,7 @@ const abrirCaja = async (req, res) => {
 };
 
 /**
- * Cerrar caja
+ * Cerrar caja - CORREGIDO: usa tasas reales de la BD en lugar de hardcodeadas
  * POST /api/caja/cerrar
  */
 const cerrarCaja = async (req, res) => {
@@ -77,7 +74,6 @@ const cerrarCaja = async (req, res) => {
 
     const idUsuario = req.user.id_usuario;
 
-    // Obtener caja abierta
     const cajaResult = await query(
       "SELECT * FROM arqueo_caja WHERE estado = 'ABIERTA' ORDER BY fecha_apertura DESC LIMIT 1"
     );
@@ -91,10 +87,13 @@ const cerrarCaja = async (req, res) => {
 
     const caja = cajaResult.rows[0];
 
-    // Calcular ventas esperadas del día (en USD para referencia)
+    // ✅ FIX: Calcular ventas usando totales REALES por moneda desde la BD
     const ventasResult = await query(
       `SELECT 
-         COALESCE(SUM(total / tm.tasa_cambio_usd), 0) as total_usd,
+         COALESCE(SUM(v.total / tm.tasa_cambio_usd), 0) as total_usd,
+         COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'USD' THEN v.total ELSE 0 END), 0) as total_usd_original,
+         COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'VES' THEN v.total ELSE 0 END), 0) as total_ves,
+         COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'COP' THEN v.total ELSE 0 END), 0) as total_cop,
          COUNT(*) as total_ventas
        FROM ventas v
        JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
@@ -102,22 +101,29 @@ const cerrarCaja = async (req, res) => {
       [caja.fecha_apertura]
     );
 
-    const ventasEsperadas = parseFloat(ventasResult.rows[0].total_usd);
-    
-    // Calcular diferencia basada en la moneda que tenga monto inicial
+    const ventas = ventasResult.rows[0];
+    const ventasEsperadasUSD = parseFloat(ventas.total_usd);
+
+    // ✅ FIX: Calcular diferencia basada en la moneda principal con montos reales de ventas
     let diferencia = 0;
-    if (parseFloat(caja.monto_inicial_cop) > 0) {
-      const montoEsperadoCOP = parseFloat(caja.monto_inicial_cop) + (ventasEsperadas * 4000); // Aproximado
-      diferencia = parseFloat(monto_final_cop) - montoEsperadoCOP;
-    } else if (parseFloat(caja.monto_inicial_usd) > 0) {
-      const montoEsperadoUSD = parseFloat(caja.monto_inicial_usd) + ventasEsperadas;
-      diferencia = parseFloat(monto_final_usd) - montoEsperadoUSD;
-    } else if (parseFloat(caja.monto_inicial_ves) > 0) {
-      const montoEsperadoVES = parseFloat(caja.monto_inicial_ves) + (ventasEsperadas * 36); // Aproximado
-      diferencia = parseFloat(monto_final_ves) - montoEsperadoVES;
+    const mFinalCOP = parseFloat(monto_final_cop);
+    const mFinalUSD = parseFloat(monto_final_usd);
+    const mFinalVES = parseFloat(monto_final_ves);
+    const mInicialCOP = parseFloat(caja.monto_inicial_cop || 0);
+    const mInicialUSD = parseFloat(caja.monto_inicial_usd || 0);
+    const mInicialVES = parseFloat(caja.monto_inicial_ves || 0);
+
+    if (mInicialCOP > 0 || mFinalCOP > 0) {
+      const esperadoCOP = mInicialCOP + parseFloat(ventas.total_cop);
+      diferencia = mFinalCOP - esperadoCOP;
+    } else if (mInicialUSD > 0 || mFinalUSD > 0) {
+      const esperadoUSD = mInicialUSD + parseFloat(ventas.total_usd_original);
+      diferencia = mFinalUSD - esperadoUSD;
+    } else if (mInicialVES > 0 || mFinalVES > 0) {
+      const esperadoVES = mInicialVES + parseFloat(ventas.total_ves);
+      diferencia = mFinalVES - esperadoVES;
     }
 
-    // Cerrar caja
     const result = await query(
       `UPDATE arqueo_caja 
        SET id_usuario_cierre = $1,
@@ -131,11 +137,10 @@ const cerrarCaja = async (req, res) => {
            estado = 'CERRADA'
        WHERE id_arqueo = $8
        RETURNING *`,
-      [idUsuario, monto_final_usd, monto_final_ves, monto_final_cop, 
-       ventasEsperadas, diferencia, notas, caja.id_arqueo]
+      [idUsuario, monto_final_usd, monto_final_ves, monto_final_cop,
+       ventasEsperadasUSD, diferencia, notas, caja.id_arqueo]
     );
 
-    // Obtener información completa
     const cajaConUsuarios = await query(
       `SELECT ac.*, 
        u1.nombre_completo as usuario_apertura,
@@ -150,7 +155,10 @@ const cerrarCaja = async (req, res) => {
     res.json({
       success: true,
       message: 'Caja cerrada exitosamente',
-      data: cajaConUsuarios.rows[0]
+      data: {
+        ...cajaConUsuarios.rows[0],
+        resumen_ventas: ventas
+      }
     });
 
   } catch (error) {
@@ -189,11 +197,16 @@ const getEstadoCaja = async (req, res) => {
       });
     }
 
-    // Obtener ventas del día
     const caja = result.rows[0];
+
+    // ✅ FIX: Incluir totales por moneda en estado de caja
     const ventasResult = await query(
-      `SELECT COUNT(*) as total_ventas, 
-       COALESCE(SUM(total / tm.tasa_cambio_usd), 0) as total_usd
+      `SELECT 
+         COUNT(*) as total_ventas, 
+         COALESCE(SUM(v.total / tm.tasa_cambio_usd), 0) as total_usd,
+         COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'USD' THEN v.total ELSE 0 END), 0) as total_usd_original,
+         COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'VES' THEN v.total ELSE 0 END), 0) as total_ves,
+         COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'COP' THEN v.total ELSE 0 END), 0) as total_cop
        FROM ventas v
        JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
        WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'`,
@@ -220,6 +233,7 @@ const getEstadoCaja = async (req, res) => {
 /**
  * Obtener flujo de caja por período
  * GET /api/caja/flujo
+ * ✅ FIX: El filtro de fecha_fin ahora cubre el día completo (hasta 23:59:59)
  */
 const getFlujoCaja = async (req, res) => {
   try {
@@ -235,12 +249,14 @@ const getFlujoCaja = async (req, res) => {
     const params = [];
 
     if (fecha_inicio) {
-      params.push(fecha_inicio);
+      // Inicio del día
+      params.push(fecha_inicio + ' 00:00:00');
       sqlQuery += ` AND fc.fecha_transaccion >= $${params.length}`;
     }
 
     if (fecha_fin) {
-      params.push(fecha_fin);
+      // ✅ FIX: Cubrir todo el día hasta las 23:59:59
+      params.push(fecha_fin + ' 23:59:59');
       sqlQuery += ` AND fc.fecha_transaccion <= $${params.length}`;
     }
 
@@ -253,23 +269,20 @@ const getFlujoCaja = async (req, res) => {
 
     const result = await query(sqlQuery, params);
 
-    // Calcular totales por moneda
     const totalesPorMoneda = result.rows.reduce((acc, t) => {
       const moneda = t.codigo_moneda;
       if (!acc[moneda]) {
-        acc[moneda] = { ingresos: 0, egresos: 0 };
+        acc[moneda] = { ingresos: 0, egresos: 0, balance: 0 };
       }
-      
       if (t.tipo_transaccion === 'INGRESO') {
         acc[moneda].ingresos += parseFloat(t.monto);
       } else {
         acc[moneda].egresos += parseFloat(t.monto);
       }
-      
+      acc[moneda].balance = acc[moneda].ingresos - acc[moneda].egresos;
       return acc;
     }, {});
 
-    // Calcular totales en USD
     const ingresos = result.rows
       .filter(t => t.tipo_transaccion === 'INGRESO')
       .reduce((sum, t) => sum + parseFloat(t.monto_usd || 0), 0);
@@ -300,7 +313,7 @@ const getFlujoCaja = async (req, res) => {
 };
 
 /**
- * Registrar transacción manual (ingreso/egreso)
+ * Registrar transacción manual
  * POST /api/caja/transaccion
  */
 const registrarTransaccion = async (req, res) => {
@@ -317,7 +330,6 @@ const registrarTransaccion = async (req, res) => {
 
     const idUsuario = req.user.id_usuario;
 
-    // Validar tipo de transacción
     if (!['INGRESO', 'EGRESO'].includes(tipo_transaccion)) {
       return res.status(400).json({
         success: false,
@@ -325,7 +337,6 @@ const registrarTransaccion = async (req, res) => {
       });
     }
 
-    // Validar que haya caja abierta
     const cajaAbierta = await query(
       "SELECT * FROM arqueo_caja WHERE estado = 'ABIERTA' ORDER BY fecha_apertura DESC LIMIT 1"
     );
@@ -337,7 +348,6 @@ const registrarTransaccion = async (req, res) => {
       });
     }
 
-    // Obtener tasa de cambio
     const tasaResult = await query(
       'SELECT tasa_cambio_usd FROM tipos_moneda WHERE id_moneda = $1',
       [id_moneda]
@@ -352,17 +362,15 @@ const registrarTransaccion = async (req, res) => {
 
     const montoUsd = parseFloat(monto) / parseFloat(tasaResult.rows[0].tasa_cambio_usd);
 
-    // Registrar transacción
     const result = await query(
       `INSERT INTO flujo_caja (tipo_transaccion, concepto, descripcion, monto, id_moneda, 
        monto_usd, id_usuario, categoria_gasto, metodo_pago)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [tipo_transaccion, concepto, descripcion, monto, id_moneda, montoUsd, 
+      [tipo_transaccion, concepto, descripcion, monto, id_moneda, montoUsd,
        idUsuario, categoria_gasto, metodo_pago]
     );
 
-    // Obtener información completa
     const transaccionCompleta = await query(
       `SELECT fc.*, tm.codigo_moneda, tm.simbolo, u.nombre_completo as usuario
        FROM flujo_caja fc
@@ -389,60 +397,72 @@ const registrarTransaccion = async (req, res) => {
 };
 
 /**
- * Obtener resumen de ventas (diario, semanal, mensual)
+ * Obtener resumen de ventas
  * GET /api/caja/resumen-ventas
+ * ✅ FIX: fecha_fin cubre el día completo, fecha_inicio desde 00:00:00
  */
 const getResumenVentas = async (req, res) => {
   try {
     const { periodo = 'diario', fecha_inicio, fecha_fin } = req.query;
 
     let fechaInicioCalc;
+    let fechaFinCalc;
     const ahora = new Date();
 
-    // Usar fechas personalizadas si se proporcionan
-    if (fecha_inicio && fecha_fin) {
-      fechaInicioCalc = new Date(fecha_inicio);
+    if (fecha_inicio) {
+      // ✅ FIX: Asegurar que la fecha inicio cubre desde 00:00:00
+      fechaInicioCalc = new Date(fecha_inicio + 'T00:00:00');
     } else {
-      // Usar período predeterminado
       switch (periodo) {
         case 'diario':
-          fechaInicioCalc = new Date(ahora.setHours(0, 0, 0, 0));
+          fechaInicioCalc = new Date(ahora);
+          fechaInicioCalc.setHours(0, 0, 0, 0);
           break;
         case 'semanal':
-          fechaInicioCalc = new Date(ahora.setDate(ahora.getDate() - 7));
+          fechaInicioCalc = new Date(ahora);
+          fechaInicioCalc.setDate(ahora.getDate() - 7);
+          fechaInicioCalc.setHours(0, 0, 0, 0);
           break;
         case 'mensual':
-          fechaInicioCalc = new Date(ahora.setMonth(ahora.getMonth() - 1));
+          fechaInicioCalc = new Date(ahora);
+          fechaInicioCalc.setMonth(ahora.getMonth() - 1);
+          fechaInicioCalc.setHours(0, 0, 0, 0);
           break;
         default:
-          fechaInicioCalc = new Date(ahora.setHours(0, 0, 0, 0));
+          fechaInicioCalc = new Date(ahora);
+          fechaInicioCalc.setHours(0, 0, 0, 0);
       }
     }
 
-    let sqlQuery = `SELECT 
-         COUNT(*) as total_ventas,
-         COALESCE(SUM(total / tm.tasa_cambio_usd), 0) as total_usd,
-         COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'USD' THEN total ELSE 0 END), 0) as total_usd_original,
-         COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'VES' THEN total ELSE 0 END), 0) as total_ves,
-         COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'COP' THEN total ELSE 0 END), 0) as total_cop
-       FROM ventas v
-       JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
-       WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'`;
-
-    const params = [fechaInicioCalc];
-
     if (fecha_fin) {
-      params.push(fecha_fin);
-      sqlQuery += ` AND v.fecha_venta <= $${params.length}`;
+      // ✅ FIX: Cubrir hasta el final del día
+      fechaFinCalc = new Date(fecha_fin + 'T23:59:59');
+    } else {
+      fechaFinCalc = new Date(ahora);
+      fechaFinCalc.setHours(23, 59, 59, 999);
     }
 
-    const result = await query(sqlQuery, params);
+    const result = await query(
+      `SELECT 
+         COUNT(*) as total_ventas,
+         COALESCE(SUM(v.total / tm.tasa_cambio_usd), 0) as total_usd,
+         COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'USD' THEN v.total ELSE 0 END), 0) as total_usd_original,
+         COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'VES' THEN v.total ELSE 0 END), 0) as total_ves,
+         COALESCE(SUM(CASE WHEN tm.codigo_moneda = 'COP' THEN v.total ELSE 0 END), 0) as total_cop,
+         COALESCE(AVG(v.total / tm.tasa_cambio_usd), 0) as promedio_venta
+       FROM ventas v
+       JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
+       WHERE v.fecha_venta >= $1 
+         AND v.fecha_venta <= $2
+         AND v.estado_venta = 'COMPLETADA'`,
+      [fechaInicioCalc, fechaFinCalc]
+    );
 
     res.json({
       success: true,
       periodo,
-      fecha_inicio: fecha_inicio || fechaInicioCalc.toISOString(),
-      fecha_fin: fecha_fin || new Date().toISOString(),
+      fecha_inicio: fechaInicioCalc.toISOString(),
+      fecha_fin: fechaFinCalc.toISOString(),
       data: result.rows[0]
     });
 
