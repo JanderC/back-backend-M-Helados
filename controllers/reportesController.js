@@ -10,7 +10,7 @@ const getDashboard = async (req, res) => {
     const { periodo = 'hoy' } = req.query;
     
     let fechaInicio;
-    const ahora = new Date();
+    const ahora = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Caracas' }));
 
     // Verificar si hay caja abierta para usar su fecha de apertura
     const cajaAbiertaResult = await query(

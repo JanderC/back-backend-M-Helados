@@ -407,7 +407,8 @@ const getResumenVentas = async (req, res) => {
 
     let fechaInicioCalc;
     let fechaFinCalc;
-    const ahora = new Date();
+    const ahora = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Caracas' }));
+
 
     if (fecha_inicio) {
       // ✅ FIX: Asegurar que la fecha inicio cubre desde 00:00:00
