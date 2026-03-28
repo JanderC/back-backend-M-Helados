@@ -442,7 +442,7 @@ const getResumenVentas = async (req, res) => {
       fechaFinCalc = new Date(ahora);
       fechaFinCalc.setHours(23, 59, 59, 999);
     }
-
+ // probar
     const result = await query(
       `SELECT 
          COUNT(*) as total_ventas,
