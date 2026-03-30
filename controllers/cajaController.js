@@ -551,21 +551,21 @@ const getVentasPorArqueo = async (req, res) => {
          v.nombre_cliente,
          tm.codigo_moneda,
          tm.simbolo,
-         -- Detalle de items
          COALESCE(
            json_agg(
              json_build_object(
-               'nombre_producto', vi.nombre_producto,
-               'cantidad',        vi.cantidad,
-               'precio_unitario', vi.precio_unitario,
-               'subtotal',        vi.subtotal
-             ) ORDER BY vi.id_item
-           ) FILTER (WHERE vi.id_item IS NOT NULL),
+               'nombre_producto', p.nombre_producto,
+               'cantidad',        dv.cantidad,
+               'precio_unitario', dv.precio_unitario,
+               'subtotal',        dv.subtotal
+             ) ORDER BY dv.id_detalle_venta
+           ) FILTER (WHERE dv.id_detalle_venta IS NOT NULL),
            '[]'
          ) as items
        FROM ventas v
        JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
-       LEFT JOIN venta_items vi ON v.id_venta = vi.id_venta
+       LEFT JOIN detalle_ventas dv ON v.id_venta = dv.id_venta
+       LEFT JOIN productos p ON dv.id_producto = p.id_producto
        WHERE v.fecha_venta >= $1
          AND v.fecha_venta <= $2
          AND v.estado_venta = 'COMPLETADA'
@@ -611,5 +611,5 @@ module.exports = {
   registrarTransaccion,
   getResumenVentas,
   getHistorialArqueos,
-  getVentasPorArqueo   
+  getVentasPorArqueo  
 };
