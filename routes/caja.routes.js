@@ -69,4 +69,6 @@ router.get('/historial', authenticate, isAdmin, getHistorialArqueos);
  */
 router.get('/historial/:id_arqueo/ventas', authenticate, isAdmin, getVentasPorArqueo);
 
+router.get('/historial-arqueos', authenticate, isAdmin, getHistorialArqueos);
+
 module.exports = router;
