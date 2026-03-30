@@ -611,5 +611,5 @@ module.exports = {
   registrarTransaccion,
   getResumenVentas,
   getHistorialArqueos,
-  getVentasPorArqueo   // ✅ NUEVO
+  getVentasPorArqueo   
 };
