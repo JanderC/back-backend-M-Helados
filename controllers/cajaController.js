@@ -249,13 +249,11 @@ const getFlujoCaja = async (req, res) => {
     const params = [];
 
     if (fecha_inicio) {
-      // Inicio del día
       params.push(fecha_inicio + ' 00:00:00');
       sqlQuery += ` AND fc.fecha_transaccion >= $${params.length}`;
     }
 
     if (fecha_fin) {
-      // ✅ FIX: Cubrir todo el día hasta las 23:59:59
       params.push(fecha_fin + ' 23:59:59');
       sqlQuery += ` AND fc.fecha_transaccion <= $${params.length}`;
     }
@@ -399,7 +397,6 @@ const registrarTransaccion = async (req, res) => {
 /**
  * Obtener resumen de ventas
  * GET /api/caja/resumen-ventas
- * ✅ FIX: fecha_fin cubre el día completo, fecha_inicio desde 00:00:00
  */
 const getResumenVentas = async (req, res) => {
   try {
@@ -409,9 +406,7 @@ const getResumenVentas = async (req, res) => {
     let fechaFinCalc;
     const ahora = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Caracas' }));
 
-
     if (fecha_inicio) {
-      // ✅ FIX: Asegurar que la fecha inicio cubre desde 00:00:00
       fechaInicioCalc = new Date(fecha_inicio + 'T00:00:00');
     } else {
       switch (periodo) {
@@ -436,13 +431,12 @@ const getResumenVentas = async (req, res) => {
     }
 
     if (fecha_fin) {
-      // ✅ FIX: Cubrir hasta el final del día
       fechaFinCalc = new Date(fecha_fin + 'T23:59:59');
     } else {
       fechaFinCalc = new Date(ahora);
       fechaFinCalc.setHours(23, 59, 59, 999);
     }
- // probar
+
     const result = await query(
       `SELECT 
          COUNT(*) as total_ventas,
@@ -512,6 +506,103 @@ const getHistorialArqueos = async (req, res) => {
   }
 };
 
+/**
+ * ✅ NUEVO: Obtener ventas detalladas de un arqueo específico
+ * GET /api/caja/historial/:id_arqueo/ventas
+ */
+const getVentasPorArqueo = async (req, res) => {
+  try {
+    const { id_arqueo } = req.params;
+
+    // Obtener el arqueo para conocer el rango de fechas
+    const arqueoResult = await query(
+      `SELECT ac.*,
+       u1.nombre_completo as usuario_apertura,
+       u2.nombre_completo as usuario_cierre
+       FROM arqueo_caja ac
+       JOIN usuarios u1 ON ac.id_usuario_apertura = u1.id_usuario
+       LEFT JOIN usuarios u2 ON ac.id_usuario_cierre = u2.id_usuario
+       WHERE ac.id_arqueo = $1`,
+      [id_arqueo]
+    );
+
+    if (arqueoResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Arqueo no encontrado'
+      });
+    }
+
+    const arqueo = arqueoResult.rows[0];
+
+    // Fecha fin: si está cerrada usar fecha_cierre, si no hasta ahora
+    const fechaFin = arqueo.fecha_cierre
+      ? arqueo.fecha_cierre
+      : new Date().toISOString();
+
+    // Obtener ventas del período del arqueo
+    const ventasResult = await query(
+      `SELECT 
+         v.id_venta,
+         v.numero_factura,
+         v.fecha_venta,
+         v.total,
+         v.estado_venta,
+         v.nombre_cliente,
+         tm.codigo_moneda,
+         tm.simbolo,
+         -- Detalle de items
+         COALESCE(
+           json_agg(
+             json_build_object(
+               'nombre_producto', vi.nombre_producto,
+               'cantidad',        vi.cantidad,
+               'precio_unitario', vi.precio_unitario,
+               'subtotal',        vi.subtotal
+             ) ORDER BY vi.id_item
+           ) FILTER (WHERE vi.id_item IS NOT NULL),
+           '[]'
+         ) as items
+       FROM ventas v
+       JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
+       LEFT JOIN venta_items vi ON v.id_venta = vi.id_venta
+       WHERE v.fecha_venta >= $1
+         AND v.fecha_venta <= $2
+         AND v.estado_venta = 'COMPLETADA'
+       GROUP BY v.id_venta, v.numero_factura, v.fecha_venta, v.total,
+                v.estado_venta, v.nombre_cliente, tm.codigo_moneda, tm.simbolo
+       ORDER BY v.fecha_venta DESC`,
+      [arqueo.fecha_apertura, fechaFin]
+    );
+
+    // Resumen de totales por moneda
+    const resumen = ventasResult.rows.reduce((acc, v) => {
+      const moneda = v.codigo_moneda;
+      if (!acc[moneda]) acc[moneda] = 0;
+      acc[moneda] += parseFloat(v.total);
+      return acc;
+    }, {});
+
+    res.json({
+      success: true,
+      data: {
+        arqueo,
+        ventas: ventasResult.rows,
+        total_ventas: ventasResult.rows.length,
+        resumen_por_moneda: resumen
+      }
+    });
+
+  } catch (error) {
+    console.error('Error al obtener ventas del arqueo:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener ventas del arqueo',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   abrirCaja,
   cerrarCaja,
@@ -519,5 +610,6 @@ module.exports = {
   getFlujoCaja,
   registrarTransaccion,
   getResumenVentas,
-  getHistorialArqueos
+  getHistorialArqueos,
+  getVentasPorArqueo   // ✅ NUEVO
 };

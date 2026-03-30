@@ -7,7 +7,8 @@ const {
   getFlujoCaja,
   registrarTransaccion,
   getResumenVentas,
-  getHistorialArqueos
+  getHistorialArqueos,
+  getVentasPorArqueo   // ✅ NUEVO
 } = require('../controllers/cajaController');
 const { authenticate } = require('../middlewares/authMiddleware');
 const { isAdmin } = require('../middlewares/roleMiddleware');
@@ -60,5 +61,12 @@ router.get('/resumen-ventas', authenticate, getResumenVentas);
  * @access  Private (Admin)
  */
 router.get('/historial', authenticate, isAdmin, getHistorialArqueos);
+
+/**
+ * @route   GET /api/caja/historial/:id_arqueo/ventas
+ * @desc    Ventas detalladas de un arqueo específico
+ * @access  Private (Admin)
+ */
+router.get('/historial/:id_arqueo/ventas', authenticate, isAdmin, getVentasPorArqueo);
 
 module.exports = router;
