@@ -477,19 +477,34 @@ const getResumenVentas = async (req, res) => {
  */
 const getHistorialArqueos = async (req, res) => {
   try {
-    const { limit = 30 } = req.query;
+    const { limit = 30, fecha_inicio, fecha_fin } = req.query;
 
-    const result = await query(
-      `SELECT ac.*, 
+    let sqlQuery = `
+      SELECT ac.*, 
        u1.nombre_completo as usuario_apertura,
        u2.nombre_completo as usuario_cierre
        FROM arqueo_caja ac
        JOIN usuarios u1 ON ac.id_usuario_apertura = u1.id_usuario
        LEFT JOIN usuarios u2 ON ac.id_usuario_cierre = u2.id_usuario
-       ORDER BY ac.fecha_apertura DESC
-       LIMIT $1`,
-      [limit]
-    );
+       WHERE 1=1
+    `;
+    const params = [];
+
+    if (fecha_inicio) {
+      params.push(fecha_inicio + ' 00:00:00');
+      sqlQuery += ` AND ac.fecha_apertura >= $${params.length}`;
+    }
+
+    if (fecha_fin) {
+      // fecha_fin ya llega con T23:59:59 desde el frontend
+      params.push(fecha_fin);
+      sqlQuery += ` AND ac.fecha_apertura <= $${params.length}`;
+    }
+
+    params.push(parseInt(limit));
+    sqlQuery += ` ORDER BY ac.fecha_apertura DESC LIMIT $${params.length}`;
+
+    const result = await query(sqlQuery, params);
 
     res.json({
       success: true,
@@ -611,5 +626,5 @@ module.exports = {
   registrarTransaccion,
   getResumenVentas,
   getHistorialArqueos,
-  getVentasPorArqueo  
+  getVentasPorArqueo   // ✅ NUEVO
 };
