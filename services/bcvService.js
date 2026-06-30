@@ -111,6 +111,32 @@ const actualizarTasaManual = async (codigoMoneda, tasa) => {
 };
 
 /**
+ * Actualizar varias tasas manualmente en un solo lote.
+ * Reutiliza actualizarTasaManual para cada moneda, por lo que
+ * no requiere columnas ni tablas adicionales: sigue escribiendo
+ * sobre tasa_cambio_usd / fecha_actualizacion de tipos_moneda.
+ */
+const actualizarTasasManualMultiples = async (tasas) => {
+  if (!Array.isArray(tasas) || tasas.length === 0) {
+    throw new Error('Debe enviar al menos una tasa para actualizar');
+  }
+
+  const resultados = [];
+  for (const item of tasas) {
+    const { codigo_moneda, tasa_cambio_usd } = item;
+
+    if (!codigo_moneda || isNaN(tasa_cambio_usd) || parseFloat(tasa_cambio_usd) <= 0) {
+      throw new Error(`Tasa inválida para la moneda ${codigo_moneda || 'desconocida'}`);
+    }
+
+    const actualizado = await actualizarTasaManual(codigo_moneda, parseFloat(tasa_cambio_usd));
+    resultados.push(actualizado);
+  }
+
+  return resultados;
+};
+
+/**
  * Convertir monto entre monedas
  */
 const convertirMoneda = async (monto, monedaOrigen, monedaDestino) => {
@@ -148,5 +174,6 @@ module.exports = {
   getTasaActual,
   getTodasLasTasas,
   actualizarTasaManual,
+  actualizarTasasManualMultiples,
   convertirMoneda
 };

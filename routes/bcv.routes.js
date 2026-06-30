@@ -14,6 +14,9 @@ router.post('/actualizar', bcvController.actualizarTasaDesdeBCV);
 // Actualizar tasa manualmente
 router.put('/actualizar-manual', bcvController.actualizarTasaManual);
 
+// Actualizar varias tasas manualmente en un solo lote
+router.put('/actualizar-multiples', bcvController.actualizarTasasManualMultiples);
+
 // Convertir entre monedas
 router.post('/convertir', bcvController.convertirMoneda);
 

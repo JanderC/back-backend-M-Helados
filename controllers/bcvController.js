@@ -118,6 +118,38 @@ const actualizarTasaManual = async (req, res) => {
 };
 
 /**
+ * Actualizar varias tasas manualmente en un solo lote
+ * PUT /api/bcv/actualizar-multiples
+ */
+const actualizarTasasManualMultiples = async (req, res) => {
+  try {
+    const { tasas } = req.body;
+
+    if (!Array.isArray(tasas) || tasas.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Debe enviar un arreglo de tasas a actualizar'
+      });
+    }
+
+    const tasasActualizadas = await bcvService.actualizarTasasManualMultiples(tasas);
+
+    res.json({
+      success: true,
+      message: 'Tasas actualizadas correctamente',
+      data: tasasActualizadas
+    });
+
+  } catch (error) {
+    console.error('Error al actualizar tasas en lote:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Error al actualizar tasas manualmente'
+    });
+  }
+};
+
+/**
  * Convertir entre monedas
  * POST /api/bcv/convertir
  */
@@ -164,5 +196,6 @@ module.exports = {
   getTodasLasTasas,
   actualizarTasaDesdeBCV,
   actualizarTasaManual,
+  actualizarTasasManualMultiples,
   convertirMoneda
 };
