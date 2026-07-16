@@ -28,7 +28,7 @@ router.get('/', authenticate, getVentas);
  * @desc    Obtener venta por ID
  * @access  Private
  */
-router.get('/:id', authenticate, getVentaById);
+router.get('/:id', getVentaById);
 
 /**
  * @route   PUT /api/ventas/:id/estado

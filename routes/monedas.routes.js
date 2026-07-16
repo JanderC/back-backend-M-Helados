@@ -39,7 +39,7 @@ router.post('/actualizar-bcv', authenticate, isAdmin, actualizarDesdeBCV);
  */
 router.put('/actualizar-manual', authenticate, isAdmin, actualizarManual);
 
-/****
+/**
  * @route   PUT /api/monedas/actualizar-multiples
  * @desc    Actualizar múltiples tasas manualmente
  * @access  Private (Admin)

@@ -133,36 +133,48 @@ const getVentaById = async (req, res) => {
       [id]
     );
 
-    const detalles = await Promise.all(
-      detallesResult.rows.map(async (detalle) => {
-        const [toppingsResult, saboresResult, siropesResult] = await Promise.all([
-          query(
-            `SELECT dvt.*, t.nombre_topping
-             FROM detalle_ventas_toppings dvt
-             JOIN toppings t ON dvt.id_topping = t.id_topping
-             WHERE dvt.id_detalle_venta = $1`, [detalle.id_detalle_venta]
-          ),
-          query(
-            `SELECT dvs.*, s.nombre_sabor
-             FROM detalles_venta_sabores dvs
-             JOIN sabores s ON dvs.id_sabor = s.id_sabor
-             WHERE dvs.id_detalle_venta = $1`, [detalle.id_detalle_venta]
-          ),
-          query(
-            `SELECT dvsi.*, si.nombre_sirope
-             FROM detalle_ventas_siropes dvsi
-             JOIN siropes si ON dvsi.id_sirope = si.id_sirope
-             WHERE dvsi.id_detalle_venta = $1`, [detalle.id_detalle_venta]
-          ),
-        ]);
-        return {
-          ...detalle,
-          toppings: toppingsResult.rows,
-          sabores:  saboresResult.rows,
-          siropes:  siropesResult.rows,
-        };
-      })
-    );
+    const idsDetalle = detallesResult.rows.map(d => d.id_detalle_venta);
+
+    // Si no hay detalles, evitamos hasta las 3 queries siguientes
+    let toppingsRows = [], saboresRows = [], siropesRows = [];
+
+    if (idsDetalle.length > 0) {
+      // 3 queries en total para TODO el pedido, no 3 por producto
+      const [toppingsResult, saboresResult, siropesResult] = await Promise.all([
+        query(
+          `SELECT dvt.*, t.nombre_topping
+           FROM detalle_ventas_toppings dvt
+           JOIN toppings t ON dvt.id_topping = t.id_topping
+           WHERE dvt.id_detalle_venta = ANY($1::int[])`,
+          [idsDetalle]
+        ),
+        query(
+          `SELECT dvs.*, s.nombre_sabor
+           FROM detalles_venta_sabores dvs
+           JOIN sabores s ON dvs.id_sabor = s.id_sabor
+           WHERE dvs.id_detalle_venta = ANY($1::int[])`,
+          [idsDetalle]
+        ),
+        query(
+          `SELECT dvsi.*, si.nombre_sirope
+           FROM detalle_ventas_siropes dvsi
+           JOIN siropes si ON dvsi.id_sirope = si.id_sirope
+           WHERE dvsi.id_detalle_venta = ANY($1::int[])`,
+          [idsDetalle]
+        ),
+      ]);
+      toppingsRows = toppingsResult.rows;
+      saboresRows  = saboresResult.rows;
+      siropesRows  = siropesResult.rows;
+    }
+
+    // Repartimos en memoria (JS) los resultados a cada detalle, sin más queries
+    const detalles = detallesResult.rows.map(detalle => ({
+      ...detalle,
+      toppings: toppingsRows.filter(t => t.id_detalle_venta === detalle.id_detalle_venta),
+      sabores:  saboresRows.filter(s => s.id_detalle_venta === detalle.id_detalle_venta),
+      siropes:  siropesRows.filter(s => s.id_detalle_venta === detalle.id_detalle_venta),
+    }));
 
     res.json({
       success: true,
