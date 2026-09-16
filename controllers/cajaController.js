@@ -1,6 +1,40 @@
 const { query } = require('../config/database');
 
 /**
+ * ✅ NUEVO: Desglose de ventas COMPLETADAS por método de pago y moneda,
+ * para un rango de fechas. Se usa en estado de caja, cierre de caja,
+ * resumen de ventas y el detalle de un arqueo.
+ */
+const getDesglosePorMetodoPago = async (fechaInicio, fechaFin = null) => {
+  const params = [fechaInicio];
+  let sqlQuery = `
+    SELECT mp.id_metodo_pago, mp.codigo, mp.nombre, mp.icono,
+           tm.codigo_moneda, tm.simbolo,
+           COALESCE(SUM(vp.monto), 0) AS total,
+           COUNT(DISTINCT vp.id_venta) AS cantidad_ventas
+    FROM venta_pagos vp
+    JOIN ventas v          ON v.id_venta = vp.id_venta
+    JOIN metodos_pago mp   ON mp.id_metodo_pago = vp.id_metodo_pago
+    JOIN tipos_moneda tm   ON tm.id_moneda = vp.id_moneda
+    WHERE v.fecha_venta >= $1
+      AND v.estado_venta = 'COMPLETADA'
+  `;
+
+  if (fechaFin) {
+    params.push(fechaFin);
+    sqlQuery += ` AND v.fecha_venta <= $${params.length}`;
+  }
+
+  sqlQuery += `
+    GROUP BY mp.id_metodo_pago, mp.codigo, mp.nombre, mp.icono, tm.codigo_moneda, tm.simbolo
+    ORDER BY mp.orden, mp.nombre
+  `;
+
+  const result = await query(sqlQuery, params);
+  return result.rows;
+};
+
+/**
  * Abrir caja
  * POST /api/caja/abrir
  */
@@ -60,7 +94,7 @@ const abrirCaja = async (req, res) => {
 };
 
 /**
- * Cerrar caja - CORREGIDO: usa tasas reales de la BD en lugar de hardcodeadas
+ * Cerrar caja - usa tasas reales de la BD en lugar de hardcodeadas
  * POST /api/caja/cerrar
  */
 const cerrarCaja = async (req, res) => {
@@ -87,7 +121,7 @@ const cerrarCaja = async (req, res) => {
 
     const caja = cajaResult.rows[0];
 
-    // ✅ FIX: Calcular ventas usando totales REALES por moneda desde la BD
+    // Calcular ventas usando totales REALES por moneda desde la BD
     const ventasResult = await query(
       `SELECT 
          COALESCE(SUM(v.total / tm.tasa_cambio_usd), 0) as total_usd,
@@ -104,7 +138,10 @@ const cerrarCaja = async (req, res) => {
     const ventas = ventasResult.rows[0];
     const ventasEsperadasUSD = parseFloat(ventas.total_usd);
 
-    // ✅ FIX: Calcular diferencia basada en la moneda principal con montos reales de ventas
+    // ✅ NUEVO: desglose de lo vendido por cada método de pago (Nequi, Pago Móvil, etc.)
+    const desglosePagos = await getDesglosePorMetodoPago(caja.fecha_apertura);
+
+    // Calcular diferencia basada en la moneda principal con montos reales de ventas
     let diferencia = 0;
     const mFinalCOP = parseFloat(monto_final_cop);
     const mFinalUSD = parseFloat(monto_final_usd);
@@ -134,11 +171,12 @@ const cerrarCaja = async (req, res) => {
            diferencia_usd = $6,
            fecha_cierre = CURRENT_TIMESTAMP,
            notas_cierre = $7,
+           desglose_pagos = $8,
            estado = 'CERRADA'
-       WHERE id_arqueo = $8
+       WHERE id_arqueo = $9
        RETURNING *`,
       [idUsuario, monto_final_usd, monto_final_ves, monto_final_cop,
-       ventasEsperadasUSD, diferencia, notas, caja.id_arqueo]
+       ventasEsperadasUSD, diferencia, notas, JSON.stringify(desglosePagos), caja.id_arqueo]
     );
 
     const cajaConUsuarios = await query(
@@ -157,7 +195,8 @@ const cerrarCaja = async (req, res) => {
       message: 'Caja cerrada exitosamente',
       data: {
         ...cajaConUsuarios.rows[0],
-        resumen_ventas: ventas
+        resumen_ventas: ventas,
+        desglose_metodos_pago: desglosePagos // ✅ NUEVO
       }
     });
 
@@ -199,7 +238,7 @@ const getEstadoCaja = async (req, res) => {
 
     const caja = result.rows[0];
 
-    // ✅ FIX: Incluir totales por moneda en estado de caja
+    // Incluir totales por moneda en estado de caja
     const ventasResult = await query(
       `SELECT 
          COUNT(*) as total_ventas, 
@@ -214,6 +253,9 @@ const getEstadoCaja = async (req, res) => {
     );
 
     caja.ventas_dia = ventasResult.rows[0];
+
+    // ✅ NUEVO: desglose por método de pago, mismo período que ventas_dia
+    caja.desglose_metodos_pago = await getDesglosePorMetodoPago(caja.fecha_apertura);
 
     res.json({
       success: true,
@@ -233,7 +275,7 @@ const getEstadoCaja = async (req, res) => {
 /**
  * Obtener flujo de caja por período
  * GET /api/caja/flujo
- * ✅ FIX: El filtro de fecha_fin ahora cubre el día completo (hasta 23:59:59)
+ * El filtro de fecha_fin cubre el día completo (hasta 23:59:59)
  */
 const getFlujoCaja = async (req, res) => {
   try {
@@ -453,12 +495,16 @@ const getResumenVentas = async (req, res) => {
       [fechaInicioCalc, fechaFinCalc]
     );
 
+    // ✅ NUEVO: desglose por método de pago para el mismo período
+    const desglose = await getDesglosePorMetodoPago(fechaInicioCalc.toISOString(), fechaFinCalc.toISOString());
+
     res.json({
       success: true,
       periodo,
       fecha_inicio: fechaInicioCalc.toISOString(),
       fecha_fin: fechaFinCalc.toISOString(),
-      data: result.rows[0]
+      data: result.rows[0],
+      desglose_metodos_pago: desglose
     });
 
   } catch (error) {
@@ -522,7 +568,7 @@ const getHistorialArqueos = async (req, res) => {
 };
 
 /**
- * ✅ NUEVO: Obtener ventas detalladas de un arqueo específico
+ * Obtener ventas detalladas de un arqueo específico
  * GET /api/caja/historial/:id_arqueo/ventas
  */
 const getVentasPorArqueo = async (req, res) => {
@@ -598,13 +644,21 @@ const getVentasPorArqueo = async (req, res) => {
       return acc;
     }, {});
 
+    // ✅ NUEVO: desglose por método de pago. Si el arqueo ya está cerrado y
+    // tiene el snapshot guardado, se usa ese (histórico fijo); si sigue
+    // abierto, se calcula en vivo.
+    const resumenMetodosPago = arqueo.desglose_pagos
+      ? arqueo.desglose_pagos
+      : await getDesglosePorMetodoPago(arqueo.fecha_apertura, fechaFin);
+
     res.json({
       success: true,
       data: {
         arqueo,
         ventas: ventasResult.rows,
         total_ventas: ventasResult.rows.length,
-        resumen_por_moneda: resumen
+        resumen_por_moneda: resumen,
+        resumen_por_metodo_pago: resumenMetodosPago // ✅ NUEVO
       }
     });
 
@@ -626,5 +680,5 @@ module.exports = {
   registrarTransaccion,
   getResumenVentas,
   getHistorialArqueos,
-  getVentasPorArqueo   // ✅ NUEVO
+  getVentasPorArqueo
 };

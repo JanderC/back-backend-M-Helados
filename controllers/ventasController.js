@@ -72,7 +72,14 @@ const getVentas = async (req, res) => {
     const dataResult = await query(
       `SELECT v.*,
               tm.codigo_moneda, tm.simbolo,
-              u.username AS nombre_usuario
+              u.username AS nombre_usuario,
+              -- ✅ NUEVO: resumen textual de métodos de pago usados (para la tabla)
+              (
+                SELECT STRING_AGG(DISTINCT mp.nombre, ' + ' ORDER BY mp.nombre)
+                FROM venta_pagos vp
+                JOIN metodos_pago mp ON mp.id_metodo_pago = vp.id_metodo_pago
+                WHERE vp.id_venta = v.id_venta
+              ) AS metodos_pago_resumen
        FROM ventas v
        JOIN tipos_moneda tm ON v.id_moneda  = tm.id_moneda
        JOIN usuarios     u  ON v.id_usuario = u.id_usuario
@@ -101,7 +108,7 @@ const getVentas = async (req, res) => {
 };
 
 /**
- * Obtener venta por ID con detalles completos (incluye siropes)
+ * Obtener venta por ID con detalles completos (incluye siropes y pagos)
  * GET /api/ventas/:id
  */
 const getVentaById = async (req, res) => {
@@ -176,9 +183,22 @@ const getVentaById = async (req, res) => {
       siropes:  siropesRows.filter(s => s.id_detalle_venta === detalle.id_detalle_venta),
     }));
 
+    // ✅ NUEVO: pagos aplicados a la venta (uno o varios métodos/monedas)
+    const pagosResult = await query(
+      `SELECT vp.id_pago, vp.monto, vp.referencia,
+              mp.id_metodo_pago, mp.codigo AS metodo_codigo, mp.nombre AS metodo_nombre, mp.icono AS metodo_icono,
+              tm.id_moneda, tm.codigo_moneda, tm.simbolo
+       FROM venta_pagos vp
+       JOIN metodos_pago mp ON vp.id_metodo_pago = mp.id_metodo_pago
+       JOIN tipos_moneda tm ON vp.id_moneda      = tm.id_moneda
+       WHERE vp.id_venta = $1
+       ORDER BY vp.id_pago`,
+      [id]
+    );
+
     res.json({
       success: true,
-      data: { ...venta, items: detalles, detalles },
+      data: { ...venta, items: detalles, detalles, pagos: pagosResult.rows },
     });
 
   } catch (error) {
@@ -188,8 +208,13 @@ const getVentaById = async (req, res) => {
 };
 
 /**
- * Crear venta con sistema COP → USD → VES (incluye siropes)
+ * Crear venta con sistema COP → USD → VES (incluye siropes y pagos)
  * POST /api/ventas
+ *
+ * body.pagos (opcional): [{ id_metodo_pago, id_moneda, monto, referencia? }, ...]
+ * Si no se envía, se asume un único pago en EFECTIVO por el total de la venta.
+ * Cuando hay más de un pago, pueden estar en monedas distintas (pago dividido);
+ * se valida que la suma (convertida a USD) coincida con el total de la venta.
  */
 const createVenta = async (req, res) => {
   const client = await getClient();
@@ -200,6 +225,7 @@ const createVenta = async (req, res) => {
       id_moneda, codigo_moneda,
       monto_total, total,
       nombre_cliente, metodo_pago, notas,
+      pagos, // ✅ NUEVO
     } = req.body;
 
     const id_usuario  = req.user.id_usuario;
@@ -254,6 +280,80 @@ const createVenta = async (req, res) => {
       totalFinal = subtotalCOP; // mantén tu lógica original aquí
     }
 
+    // ── ✅ NUEVO: normalizar y validar los pagos ──────────────────────────────
+    let pagosNormalizados = Array.isArray(pagos) && pagos.length > 0 ? pagos : null;
+
+    if (!pagosNormalizados) {
+      // Compatibilidad: si no mandan 'pagos', se asume un único pago en EFECTIVO
+      const efectivoResult = await client.query(
+        `SELECT id_metodo_pago FROM metodos_pago WHERE codigo = 'EFECTIVO'`
+      );
+      if (efectivoResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(500).json({
+          success: false,
+          message: 'No existe el método de pago EFECTIVO. Corre la migración de métodos de pago.',
+        });
+      }
+      pagosNormalizados = [{
+        id_metodo_pago: efectivoResult.rows[0].id_metodo_pago,
+        id_moneda: monedaId,
+        monto: montoMonedaOriginal,
+      }];
+    }
+
+    // Validar cada línea de pago y calcular el total pagado en USD
+    let totalPagadoUSD = 0;
+    const monedasCache = {}; // id_moneda -> tasa_cambio_usd
+
+    for (const pago of pagosNormalizados) {
+      const montoPago = parseFloat(pago.monto);
+      if (!pago.id_metodo_pago || !pago.id_moneda || !montoPago || montoPago <= 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          success: false,
+          message: 'Cada pago debe tener método, moneda y un monto mayor a 0',
+        });
+      }
+
+      if (!(pago.id_moneda in monedasCache)) {
+        const mResult = await client.query(
+          'SELECT tasa_cambio_usd FROM tipos_moneda WHERE id_moneda = $1',
+          [pago.id_moneda]
+        );
+        if (mResult.rows.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ success: false, message: 'Moneda de pago no válida' });
+        }
+        monedasCache[pago.id_moneda] = parseFloat(mResult.rows[0].tasa_cambio_usd);
+      }
+
+      totalPagadoUSD += montoPago / monedasCache[pago.id_moneda];
+    }
+
+    const totalVentaUSD = totalFinal / tasaCambio;
+    const toleranciaUSD = Math.max(1, totalVentaUSD * 0.02); // 2% o 1 USD, lo que sea mayor
+
+    if (Math.abs(totalPagadoUSD - totalVentaUSD) > toleranciaUSD) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        success: false,
+        message: `La suma de los pagos (≈ $${totalPagadoUSD.toFixed(2)} USD) no coincide con el total de la venta (≈ $${totalVentaUSD.toFixed(2)} USD)`,
+      });
+    }
+
+    // Texto legible para la columna legacy 'ventas.metodo_pago'
+    let metodoPagoTexto = metodo_pago || 'EFECTIVO';
+    if (pagosNormalizados.length > 1) {
+      metodoPagoTexto = 'MIXTO';
+    } else {
+      const soloMetodoResult = await client.query(
+        'SELECT codigo FROM metodos_pago WHERE id_metodo_pago = $1',
+        [pagosNormalizados[0].id_metodo_pago]
+      );
+      if (soloMetodoResult.rows.length > 0) metodoPagoTexto = soloMetodoResult.rows[0].codigo;
+    }
+
     const ventaResult = await client.query(
       `INSERT INTO ventas
        (numero_factura, nombre_cliente, id_usuario, subtotal, impuesto, descuento,
@@ -261,10 +361,19 @@ const createVenta = async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING *`,
       [numeroFactura, nombre_cliente || null, id_usuario, totalFinal, 0, 0,
-       totalFinal, monedaId, montoMonedaOriginal, metodo_pago || 'EFECTIVO', 'PENDIENTE', notas || null]
+       totalFinal, monedaId, montoMonedaOriginal, metodoPagoTexto, 'PENDIENTE', notas || null]
     );
 
     const id_venta = ventaResult.rows[0].id_venta;
+
+    // ✅ NUEVO: guardar cada línea de pago
+    for (const pago of pagosNormalizados) {
+      await client.query(
+        `INSERT INTO venta_pagos (id_venta, id_metodo_pago, id_moneda, monto, referencia)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [id_venta, pago.id_metodo_pago, pago.id_moneda, parseFloat(pago.monto), pago.referencia || null]
+      );
+    }
 
     for (const prod of items) {
       const detalleResult = await client.query(
@@ -332,6 +441,7 @@ const createVenta = async (req, res) => {
         estado_venta: 'PENDIENTE', fecha_venta: new Date(),
         cantidad_items: items.length,
         items: detallesCompletos, detalles: detallesCompletos,
+        pagos: pagosNormalizados, // ✅ NUEVO
       };
       console.log('📡 Emitiendo evento de nueva venta:', numeroFactura);
       io.to('despensadores').emit('pedido_nuevo', { venta: ventaCompleta, mensaje: `Nueva orden: ${numeroFactura}`, timestamp: new Date() });
@@ -341,7 +451,10 @@ const createVenta = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Venta creada exitosamente',
-      data: { id_venta, numero_factura: numeroFactura, nombre_cliente: nombre_cliente || null, total: totalFinal, codigo_moneda: monedaSeleccionada },
+      data: {
+        id_venta, numero_factura: numeroFactura, nombre_cliente: nombre_cliente || null,
+        total: totalFinal, codigo_moneda: monedaSeleccionada, metodo_pago: metodoPagoTexto,
+      },
     });
 
   } catch (error) {
