@@ -183,7 +183,7 @@ const getVentaById = async (req, res) => {
       siropes:  siropesRows.filter(s => s.id_detalle_venta === detalle.id_detalle_venta),
     }));
 
-    // ✅ NUEVO: pagos aplicados a la venta (uno o varios métodos/monedas)
+    // ✅ NUEVO: pagos aplicados a la venta (uno o varios métodos/monedas).
     const pagosResult = await query(
       `SELECT vp.id_pago, vp.monto, vp.referencia,
               mp.id_metodo_pago, mp.codigo AS metodo_codigo, mp.nombre AS metodo_nombre, mp.icono AS metodo_icono,
