@@ -25,6 +25,7 @@ const saboresRoutes = require('./routes/sabores.routes');
 const clientesRoutes = require('./routes/clientes.routes');
 const bcvRoutes = require('./routes/bcv.routes');
 const siropesRoutes = require('./routes/siropes.routes');
+const metodosPagoRoutes = require('./routes/metodosPago.routes');
 
 // ============================================
 // INICIALIZACIÓN DE EXPRESS
@@ -120,7 +121,7 @@ app.use('/api/sabores', saboresRoutes);
 app.use('/api/clientes', clientesRoutes);
 app.use('/api/bcv', bcvRoutes);
 app.use('/api/siropes', siropesRoutes);
-
+app.use('/api/metodos-pago', metodosPagoRoutes);
 // ============================================
 // MANEJO DE ERRORES
 // ============================================
