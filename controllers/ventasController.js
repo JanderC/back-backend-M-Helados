@@ -396,8 +396,9 @@ const createVenta = async (req, res) => {
       if (prod.sabores?.length) {
         for (const s of prod.sabores) {
           await client.query(
-            `INSERT INTO detalles_venta_sabores (id_detalle_venta, id_sabor) VALUES ($1,$2)`,
-            [id_detalle_venta, s.id_sabor]
+            `INSERT INTO detalles_venta_sabores (id_detalle_venta, id_sabor, cantidad, precio_unitario)
+             VALUES ($1,$2,$3,$4)`,
+            [id_detalle_venta, s.id_sabor, prod.cantidad, s.precio_unitario || s.precio || 0]
           );
         }
       }
