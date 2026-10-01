@@ -1,5 +1,14 @@
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 require('dotenv').config();
+
+/**
+ * Las columnas "timestamp without time zone" se guardan en UTC. Por defecto
+ * pg las interpreta en la hora local del servidor, así que la hora cambiaba
+ * según dónde corriera el backend. Se leen siempre como UTC.
+ */
+types.setTypeParser(types.builtins.TIMESTAMP, (valor) =>
+  valor === null ? null : new Date(valor.replace(' ', 'T') + 'Z')
+);
 
 /**
  * Configuración de la conexión a PostgreSQL

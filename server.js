@@ -8,6 +8,7 @@ require('dotenv').config();
 
 // Importar configuraciones
 const { testConnection } = require('./config/database');
+const { runMigrations } = require('./config/migrations');
 const { setupSocket } = require('./config/socket');
 
 // Importar middlewares
@@ -147,6 +148,9 @@ const startServer = async () => {
       console.error('❌ No se pudo conectar a la base de datos');
       process.exit(1);
     }
+
+    // Dejar el esquema al día antes de atender peticiones
+    await runMigrations();
 
     // Iniciar servidor
     server.listen(PORT, () => {

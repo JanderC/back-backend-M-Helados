@@ -1,22 +1,25 @@
 const { query, getClient } = require('../config/database');
+const { soloFecha, inicioDiaSQL, finDiaSQL } = require('../utils/fechas');
 
 /**
  * Obtener todas las ventas (con paginación real y total_count)
  * GET /api/ventas
- * Query params: fecha_inicio, fecha_fin, estado | estado_venta, id_usuario, id_cliente, limit, offset
+ * Query params: fecha_inicio, fecha_fin, estado | estado_venta, id_usuario, id_cliente, id_arqueo, limit, offset
+ * fecha_inicio / fecha_fin son días del negocio (hora de Venezuela), ambos inclusive
  */
 const getVentas = async (req, res) => {
   try {
     const {
-      fecha_inicio,
-      fecha_fin,
       estado,
       estado_venta, // alias del frontend
       id_usuario,
       id_cliente,
+      id_arqueo,
       limit  = 20,
       offset = 0,
     } = req.query;
+    const fecha_inicio = soloFecha(req.query.fecha_inicio);
+    const fecha_fin    = soloFecha(req.query.fecha_fin);
 
     // Acepta tanto 'estado' como 'estado_venta'
     const estadoFiltro = estado_venta || estado;
@@ -27,13 +30,13 @@ const getVentas = async (req, res) => {
 
     if (fecha_inicio) {
       params.push(fecha_inicio);
-      whereClause += ` AND v.fecha_venta >= $${params.length}::date`;
+      whereClause += ` AND v.fecha_venta >= ${inicioDiaSQL(`$${params.length}`)}`;
     }
 
     if (fecha_fin) {
       params.push(fecha_fin);
       // Incluye hasta el último segundo del día indicado
-      whereClause += ` AND v.fecha_venta < ($${params.length}::date + INTERVAL '1 day')`;
+      whereClause += ` AND v.fecha_venta < ${finDiaSQL(`$${params.length}`)}`;
     }
 
     if (estadoFiltro) {
@@ -51,6 +54,11 @@ const getVentas = async (req, res) => {
     if (id_cliente) {
       params.push(id_cliente);
       whereClause += ` AND v.id_cliente = $${params.length}`;
+    }
+
+    if (id_arqueo) {
+      params.push(id_arqueo);
+      whereClause += ` AND v.id_arqueo = $${params.length}`;
     }
 
     // ── COUNT total (mismos filtros, sin LIMIT/OFFSET) ────────────────────────
@@ -248,6 +256,25 @@ const createVenta = async (req, res) => {
 
     await client.query('BEGIN');
 
+    // Toda venta pertenece a la caja abierta en el momento de registrarla.
+    // FOR SHARE evita que la caja se cierre mientras esta venta se guarda.
+    const cajaResult = await client.query(
+      `SELECT id_arqueo FROM arqueo_caja
+       WHERE estado = 'ABIERTA'
+       ORDER BY fecha_apertura DESC
+       LIMIT 1
+       FOR SHARE`
+    );
+    if (cajaResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        success: false,
+        codigo: 'CAJA_CERRADA',
+        message: 'No hay caja abierta. Abre la caja antes de registrar ventas.',
+      });
+    }
+    const idArqueo = cajaResult.rows[0].id_arqueo;
+
     const facturaResult = await client.query(
       `SELECT COALESCE(MAX(CAST(SUBSTRING(numero_factura FROM 6) AS INTEGER)), 0) + 1 AS next_num
        FROM ventas WHERE numero_factura LIKE 'FACT-%'`
@@ -357,11 +384,11 @@ const createVenta = async (req, res) => {
     const ventaResult = await client.query(
       `INSERT INTO ventas
        (numero_factura, nombre_cliente, id_usuario, subtotal, impuesto, descuento,
-        total, id_moneda, monto_moneda_original, metodo_pago, estado_venta, notas)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        total, id_moneda, monto_moneda_original, metodo_pago, estado_venta, notas, id_arqueo)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [numeroFactura, nombre_cliente || null, id_usuario, totalFinal, 0, 0,
-       totalFinal, monedaId, montoMonedaOriginal, metodoPagoTexto, 'PENDIENTE', notas || null]
+       totalFinal, monedaId, montoMonedaOriginal, metodoPagoTexto, 'PENDIENTE', notas || null, idArqueo]
     );
 
     const id_venta = ventaResult.rows[0].id_venta;

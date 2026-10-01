@@ -1,40 +1,38 @@
 const { query } = require('../config/database');
+const { soloFecha, hoyNegocio, inicioDiaSQL, finDiaSQL } = require('../utils/fechas');
 
 /**
  * Dashboard - Resumen general
  * GET /api/reportes/dashboard
- * CORREGIDO: Ahora considera el período de la caja abierta actual
+ * Con caja abierta y periodo 'hoy' muestra solo las ventas de esa caja
  */
 const getDashboard = async (req, res) => {
   try {
     const { periodo = 'hoy' } = req.query;
     
-    let fechaInicio;
-    const ahora = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Caracas' }));
-
-    // Verificar si hay caja abierta para usar su fecha de apertura
+    // Verificar si hay caja abierta para mostrar solo las ventas de esa caja
     const cajaAbiertaResult = await query(
-      "SELECT fecha_apertura FROM arqueo_caja WHERE estado = 'ABIERTA' ORDER BY fecha_apertura DESC LIMIT 1"
+      "SELECT id_arqueo, fecha_apertura FROM arqueo_caja WHERE estado = 'ABIERTA' ORDER BY fecha_apertura DESC LIMIT 1"
     );
 
-    // Si hay caja abierta, usar su fecha de apertura como fecha_inicio
+    // `filtroVentas` es la condición sobre la tabla ventas y `filtroParam` su $1
+    let filtroVentas;
+    let filtroParam;
+    let fechaDesde;
+
     if (cajaAbiertaResult.rows.length > 0 && periodo === 'hoy') {
-      fechaInicio = new Date(cajaAbiertaResult.rows[0].fecha_apertura);
+      filtroVentas = 'id_arqueo = $1';
+      filtroParam = cajaAbiertaResult.rows[0].id_arqueo;
+      fechaDesde = cajaAbiertaResult.rows[0].fecha_apertura;
     } else {
-      // Usar el período solicitado
-      switch (periodo) {
-        case 'hoy':
-          fechaInicio = new Date(ahora.setHours(0, 0, 0, 0));
-          break;
-        case 'semana':
-          fechaInicio = new Date(ahora.setDate(ahora.getDate() - 7));
-          break;
-        case 'mes':
-          fechaInicio = new Date(ahora.setMonth(ahora.getMonth() - 1));
-          break;
-        default:
-          fechaInicio = new Date(ahora.setHours(0, 0, 0, 0));
-      }
+      // Días del negocio (hora de Venezuela), no días UTC
+      const desde = new Date(hoyNegocio() + 'T00:00:00Z');
+      if (periodo === 'semana') desde.setUTCDate(desde.getUTCDate() - 7);
+      if (periodo === 'mes') desde.setUTCMonth(desde.getUTCMonth() - 1);
+      filtroVentas = `fecha_venta >= ${inicioDiaSQL('$1')}`;
+      filtroParam = desde.toISOString().slice(0, 10);
+      const desdeResult = await query(`SELECT ${inicioDiaSQL('$1')} as desde`, [filtroParam]);
+      fechaDesde = desdeResult.rows[0].desde;
     }
 
     // Resumen de ventas GENERAL (en USD)
@@ -45,8 +43,8 @@ const getDashboard = async (req, res) => {
          COALESCE(AVG(total / tm.tasa_cambio_usd), 0) as promedio_venta
        FROM ventas v
        JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
-       WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'`,
-      [fechaInicio]
+       WHERE v.${filtroVentas} AND v.estado_venta = 'COMPLETADA'`,
+      [filtroParam]
     );
 
     // Ventas POR MONEDA
@@ -60,10 +58,10 @@ const getDashboard = async (req, res) => {
          COALESCE(SUM(v.total / tm.tasa_cambio_usd), 0) as total_usd
        FROM ventas v
        JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
-       WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'
+       WHERE v.${filtroVentas} AND v.estado_venta = 'COMPLETADA'
        GROUP BY tm.codigo_moneda, tm.nombre_moneda, tm.simbolo
        ORDER BY tm.codigo_moneda`,
-      [fechaInicio]
+      [filtroParam]
     );
 
     // Productos más vendidos GENERAL
@@ -72,11 +70,11 @@ const getDashboard = async (req, res) => {
        FROM detalle_ventas dv
        JOIN productos p ON dv.id_producto = p.id_producto
        JOIN ventas v ON dv.id_venta = v.id_venta
-       WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'
+       WHERE v.${filtroVentas} AND v.estado_venta = 'COMPLETADA'
        GROUP BY p.nombre_producto
        ORDER BY cantidad DESC
        LIMIT 5`,
-      [fechaInicio]
+      [filtroParam]
     );
 
     // Toppings más usados
@@ -88,11 +86,11 @@ const getDashboard = async (req, res) => {
        JOIN toppings t ON dvt.id_topping = t.id_topping
        JOIN detalle_ventas dv ON dvt.id_detalle_venta = dv.id_detalle_venta
        JOIN ventas v ON dv.id_venta = v.id_venta
-       WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'
+       WHERE v.${filtroVentas} AND v.estado_venta = 'COMPLETADA'
        GROUP BY t.nombre_topping
        ORDER BY cantidad DESC
        LIMIT 5`,
-      [fechaInicio]
+      [filtroParam]
     );
 
     // Contar productos y toppings disponibles
@@ -127,8 +125,8 @@ const getDashboard = async (req, res) => {
          COALESCE(SUM(total / tm.tasa_cambio_usd), 0) as total_usd
          FROM ventas v
          JOIN tipos_moneda tm ON v.id_moneda = tm.id_moneda
-         WHERE v.fecha_venta >= $1 AND v.estado_venta = 'COMPLETADA'`,
-        [estadoCaja.fecha_apertura]
+         WHERE v.id_arqueo = $1 AND v.estado_venta = 'COMPLETADA'`,
+        [estadoCaja.id_arqueo]
       );
       
       estadoCaja.ventas_dia = ventasCajaResult.rows[0];
@@ -147,9 +145,9 @@ const getDashboard = async (req, res) => {
     const ventasEstadoResult = await query(
       `SELECT estado_venta, COUNT(*) as cantidad
        FROM ventas
-       WHERE fecha_venta >= $1
+       WHERE ${filtroVentas}
        GROUP BY estado_venta`,
-      [fechaInicio]
+      [filtroParam]
     );
 
     res.json({
@@ -165,7 +163,7 @@ const getDashboard = async (req, res) => {
         inventario_bajo: inventarioBajoResult.rows,
         ventas_por_estado: ventasEstadoResult.rows,
         periodo,
-        fecha_desde: fechaInicio.toISOString()
+        fecha_desde: fechaDesde.toISOString()
       }
     });
 
@@ -250,7 +248,9 @@ const getReportesMensuales = async (req, res) => {
 
 const getProductosVendidos = async (req, res) => {
   try {
-    const { fecha_inicio, fecha_fin, limit = 10 } = req.query;
+    const { limit = 10 } = req.query;
+    const fecha_inicio = soloFecha(req.query.fecha_inicio);
+    const fecha_fin = soloFecha(req.query.fecha_fin);
 
     let sqlQuery = `
       SELECT 
@@ -270,12 +270,12 @@ const getProductosVendidos = async (req, res) => {
 
     if (fecha_inicio) {
       params.push(fecha_inicio);
-      sqlQuery += ` AND v.fecha_venta >= $${params.length}`;
+      sqlQuery += ` AND v.fecha_venta >= ${inicioDiaSQL(`$${params.length}`)}`;
     }
 
     if (fecha_fin) {
       params.push(fecha_fin);
-      sqlQuery += ` AND v.fecha_venta <= $${params.length}`;
+      sqlQuery += ` AND v.fecha_venta < ${finDiaSQL(`$${params.length}`)}`;
     }
 
     sqlQuery += `
@@ -304,7 +304,9 @@ const getProductosVendidos = async (req, res) => {
 
 const getToppingsUsados = async (req, res) => {
   try {
-    const { fecha_inicio, fecha_fin, limit = 10 } = req.query;
+    const { limit = 10 } = req.query;
+    const fecha_inicio = soloFecha(req.query.fecha_inicio);
+    const fecha_fin = soloFecha(req.query.fecha_fin);
 
     let sqlQuery = `
       SELECT 
@@ -323,12 +325,12 @@ const getToppingsUsados = async (req, res) => {
 
     if (fecha_inicio) {
       params.push(fecha_inicio);
-      sqlQuery += ` AND v.fecha_venta >= $${params.length}`;
+      sqlQuery += ` AND v.fecha_venta >= ${inicioDiaSQL(`$${params.length}`)}`;
     }
 
     if (fecha_fin) {
       params.push(fecha_fin);
-      sqlQuery += ` AND v.fecha_venta <= $${params.length}`;
+      sqlQuery += ` AND v.fecha_venta < ${finDiaSQL(`$${params.length}`)}`;
     }
 
     sqlQuery += `
@@ -435,7 +437,8 @@ const getReporteInventario = async (req, res) => {
 
 const getVentasPorCategoria = async (req, res) => {
   try {
-    const { fecha_inicio, fecha_fin } = req.query;
+    const fecha_inicio = soloFecha(req.query.fecha_inicio);
+    const fecha_fin = soloFecha(req.query.fecha_fin);
 
     let sqlQuery = `
       SELECT 
@@ -454,12 +457,12 @@ const getVentasPorCategoria = async (req, res) => {
 
     if (fecha_inicio) {
       params.push(fecha_inicio);
-      sqlQuery += ` AND v.fecha_venta >= $${params.length}`;
+      sqlQuery += ` AND v.fecha_venta >= ${inicioDiaSQL(`$${params.length}`)}`;
     }
 
     if (fecha_fin) {
       params.push(fecha_fin);
-      sqlQuery += ` AND v.fecha_venta <= $${params.length}`;
+      sqlQuery += ` AND v.fecha_venta < ${finDiaSQL(`$${params.length}`)}`;
     }
 
     sqlQuery += `
