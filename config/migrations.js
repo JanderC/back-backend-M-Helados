@@ -30,6 +30,12 @@ const migrarCajaPorTurno = async (client) => {
      ON arqueo_caja (estado) WHERE estado = 'ABIERTA'`
   );
 
+  // En bolívares se cobra por Pago Móvil o punto de venta
+  await client.query(
+    `UPDATE metodos_pago SET nombre = 'Punto de venta', icono = 'bi-credit-card'
+     WHERE codigo = 'TARJETA' AND nombre = 'Tarjeta'`
+  );
+
   if (primeraVez) {
     // Históricos: se asignan a la caja que estaba abierta a la hora del registro
     const ventas = await client.query(

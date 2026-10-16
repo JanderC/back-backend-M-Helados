@@ -1,4 +1,5 @@
 const { query } = require('../config/database');
+const { monedasPermitidas } = require('../utils/pagos');
 
 /**
  * Listar métodos de pago
@@ -31,8 +32,13 @@ const getMetodosPago = async (req, res) => {
     sqlQuery += ' ORDER BY mp.orden ASC, mp.nombre ASC';
 
     const result = await query(sqlQuery, params);
+    const monedas = await query('SELECT codigo_moneda FROM tipos_moneda ORDER BY id_moneda');
+    const codigos = monedas.rows.map((m) => m.codigo_moneda);
 
-    res.json({ success: true, data: result.rows });
+    // monedas_permitidas: en qué monedas se puede cobrar con cada método
+    const data = result.rows.map((mp) => ({ ...mp, monedas_permitidas: monedasPermitidas(mp, codigos) }));
+
+    res.json({ success: true, data });
   } catch (error) {
     console.error('Error al obtener métodos de pago:', error);
     res.status(500).json({ success: false, message: 'Error al obtener métodos de pago' });

@@ -85,10 +85,11 @@ const getResumenVentasWhere = async (db, where, params = []) => {
 };
 
 /**
- * Cuadre completo de un arqueo: ventas, desglose por método de pago y el
- * efectivo que debería haber en la gaveta por moneda:
- *   esperado = monto inicial + ventas en efectivo + ingresos − egresos
- * Lo cobrado por Nequi, Pago Móvil, transferencia, etc. no entra a la gaveta.
+ * Cuadre completo de un arqueo, en dos partes:
+ *  - efectivo: lo que debería haber en la gaveta por moneda
+ *      esperado = monto inicial + ventas en efectivo + ingresos − egresos
+ *  - electronicos: lo cobrado por Pago Móvil, punto de venta, Nequi, etc.,
+ *    que se verifica contra el banco / cierre del punto, no contra la gaveta.
  */
 const calcularCuadreArqueo = async (db, arqueo) => {
   const { ventas, desglose } = await getResumenVentasWhere(db, 'v.id_arqueo = $1', [arqueo.id_arqueo]);
@@ -138,10 +139,24 @@ const calcularCuadreArqueo = async (db, arqueo) => {
     };
   }
 
+  const electronicos = desglose
+    .filter(d => d.codigo !== 'EFECTIVO')
+    .map(d => ({
+      clave: `${d.id_metodo_pago}-${d.codigo_moneda}`,
+      id_metodo_pago: d.id_metodo_pago,
+      codigo: d.codigo,
+      nombre: d.nombre,
+      icono: d.icono,
+      codigo_moneda: d.codigo_moneda,
+      sistema: redondear(d.total),
+      cantidad_ventas: parseInt(d.cantidad_ventas, 10)
+    }));
+
   return {
     ventas,
     desglose,
     efectivo,
+    electronicos,
     ventas_pendientes: parseInt(pendientesResult.rows[0].total, 10)
   };
 };
@@ -216,7 +231,9 @@ const abrirCaja = async (req, res) => {
 
 /**
  * Cerrar caja. Compara, por cada moneda, el efectivo contado contra el
- * efectivo esperado del turno y guarda el cuadre completo en resumen_cierre.
+ * efectivo esperado del turno, y cada pago electrónico contra lo que reporta
+ * el banco / punto (body.reportado = { "<id_metodo_pago>-<moneda>": monto }).
+ * Guarda el cuadre completo en resumen_cierre.
  * POST /api/caja/cerrar
  */
 const cerrarCaja = async (req, res) => {
@@ -278,6 +295,26 @@ const cerrarCaja = async (req, res) => {
     const tasas = {};
     tasasResult.rows.forEach(t => { tasas[t.codigo_moneda] = parseFloat(t.tasa_cambio_usd); });
 
+    const reportadoBody = req.body.reportado && typeof req.body.reportado === 'object' ? req.body.reportado : {};
+    const electronicos = [];
+    for (const e of cuadre.electronicos) {
+      const valor = reportadoBody[e.clave];
+      const informado = valor !== undefined && valor !== null && valor !== '';
+      const reportado = informado ? leerMonto(valor) : null;
+      if (informado && reportado === null) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          success: false,
+          message: `El monto reportado de ${e.nombre} debe ser un número mayor o igual a 0`
+        });
+      }
+      electronicos.push({
+        ...e,
+        reportado: informado ? redondear(reportado) : null,
+        diferencia: informado ? redondear(reportado - e.sistema) : null
+      });
+    }
+
     const porMoneda = {};
     let diferenciaUSD = 0;
     for (const moneda of MONEDAS) {
@@ -289,11 +326,15 @@ const cerrarCaja = async (req, res) => {
       };
       if (tasas[moneda] > 0) diferenciaUSD += diferencia / tasas[moneda];
     }
+    for (const e of electronicos) {
+      if (e.diferencia && tasas[e.codigo_moneda] > 0) diferenciaUSD += e.diferencia / tasas[e.codigo_moneda];
+    }
 
     const resumenCierre = {
-      version: 1,
+      version: 2,
       total_ventas: parseInt(cuadre.ventas.total_ventas, 10),
       por_moneda: porMoneda,
+      electronicos,
       tasas
     };
 
@@ -374,6 +415,7 @@ const getEstadoCaja = async (req, res) => {
     caja.ventas_dia = cuadre.ventas;
     caja.desglose_metodos_pago = cuadre.desglose;
     caja.efectivo = cuadre.efectivo;
+    caja.electronicos = cuadre.electronicos;
     caja.ventas_pendientes = cuadre.ventas_pendientes;
 
     res.json({

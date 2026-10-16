@@ -1,5 +1,6 @@
 const { query, getClient } = require('../config/database');
 const { soloFecha, inicioDiaSQL, finDiaSQL } = require('../utils/fechas');
+const { validarMetodoEnMoneda } = require('../utils/pagos');
 
 /**
  * Obtener todas las ventas (con paginación real y total_count)
@@ -360,6 +361,26 @@ const createVenta = async (req, res) => {
           return res.status(400).json({ success: false, message: 'Moneda de pago no válida' });
         }
         monedasCache[pago.id_moneda] = parseFloat(mResult.rows[0].tasa_cambio_usd);
+      }
+
+      // El método tiene que valer para la moneda del pago (ej. en bolívares
+      // solo Pago Móvil o punto de venta, nunca efectivo)
+      const metodoResult = await client.query(
+        `SELECT mp.codigo, mp.nombre, mt.codigo_moneda,
+                (SELECT codigo_moneda FROM tipos_moneda WHERE id_moneda = $2) AS moneda_pago
+         FROM metodos_pago mp
+         LEFT JOIN tipos_moneda mt ON mt.id_moneda = mp.id_moneda
+         WHERE mp.id_metodo_pago = $1 AND mp.activo = true`,
+        [pago.id_metodo_pago, pago.id_moneda]
+      );
+      if (metodoResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ success: false, message: 'Método de pago no válido o inactivo' });
+      }
+      const errorMetodo = validarMetodoEnMoneda(metodoResult.rows[0], metodoResult.rows[0].moneda_pago);
+      if (errorMetodo) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ success: false, codigo: 'METODO_NO_PERMITIDO', message: errorMetodo });
       }
 
       totalPagadoUSD += montoPago / monedasCache[pago.id_moneda];
