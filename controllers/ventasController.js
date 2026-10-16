@@ -225,7 +225,14 @@ const getVentaById = async (req, res) => {
  * se valida que la suma (convertida a USD) coincida con el total de la venta.
  */
 const createVenta = async (req, res) => {
-  const client = await getClient();
+  let client;
+  try {
+    client = await getClient();
+  } catch (error) {
+    // Sin conexión a la BD (ej. Supabase lento): se responde error, el servidor sigue vivo
+    console.error('Sin conexión a la base de datos:', error.message);
+    return res.status(503).json({ success: false, message: 'No se pudo conectar con la base de datos. Intenta de nuevo.' });
+  }
 
   try {
     const {

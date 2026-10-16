@@ -186,14 +186,18 @@ const startServer = async () => {
 };
 
 // Manejo de errores no capturados
+// Una promesa rechazada sin manejar se registra, pero no tumba el servidor
 process.on('unhandledRejection', (err) => {
   console.error('❌ Unhandled Rejection:', err);
-  server.close(() => process.exit(1));
 });
 
+// Ante un error grave se sale de inmediato para que Railway reinicie el
+// servicio. Antes se usaba server.close(), que espera a que se cierren todas
+// las conexiones abiertas (sockets): el proceso quedaba vivo pero sin
+// responder, y la app se caía hasta reiniciarla a mano.
 process.on('uncaughtException', (err) => {
   console.error('❌ Uncaught Exception:', err);
-  server.close(() => process.exit(1));
+  process.exit(1);
 });
 
 // Manejo de señal de terminación

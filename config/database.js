@@ -21,7 +21,8 @@ const pool = new Pool({
   password: process.env.DB_PASSWORD || 'Mhelados123*',
   max: 20, // Máximo de conexiones en el pool
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  // Supabase a veces tarda más de 2 s en dar conexión; con 2 s fallaban ventas
+  connectionTimeoutMillis: 10000,
 });
 //Cambio
 /**
@@ -77,9 +78,10 @@ pool.on('connect', () => {
   console.log('✅ Conectado a PostgreSQL');
 });
 
+// Una conexión inactiva que se cae (Supabase las corta a veces) se descarta
+// sola del pool; no hay que matar el servidor por eso
 pool.on('error', (err) => {
   console.error('❌ Error inesperado en PostgreSQL:', err);
-  process.exit(-1);
 });
 
 /**
